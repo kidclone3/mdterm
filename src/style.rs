@@ -33,6 +33,9 @@ pub enum LineMeta {
     CodeContent {
         block_id: usize,
     },
+    DiagramContent {
+        block_id: usize,
+    },
     ListItem {
         list_id: usize,
     },
@@ -92,7 +95,10 @@ pub fn wrap_lines(lines: &[Line], width: usize) -> Vec<Line> {
     }
     let mut result = Vec::new();
     for line in lines {
-        if line.spans.is_empty() || line.display_width() <= width {
+        if line.spans.is_empty()
+            || line.display_width() <= width
+            || matches!(line.meta, LineMeta::DiagramContent { .. })
+        {
             result.push(line.clone());
         } else if line
             .spans

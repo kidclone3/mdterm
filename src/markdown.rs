@@ -461,7 +461,7 @@ impl<'a> Renderer<'a> {
                     },
                 },
             ],
-            meta: LineMeta::CodeContent { block_id },
+            meta: LineMeta::DiagramContent { block_id },
         });
 
         // Diagram content rows
@@ -507,7 +507,7 @@ impl<'a> Renderer<'a> {
 
             self.lines.push(Line {
                 spans,
-                meta: LineMeta::CodeContent { block_id },
+                meta: LineMeta::DiagramContent { block_id },
             });
         }
 
@@ -520,7 +520,7 @@ impl<'a> Renderer<'a> {
                     ..Default::default()
                 },
             }],
-            meta: LineMeta::CodeContent { block_id },
+            meta: LineMeta::DiagramContent { block_id },
         });
     }
 
@@ -1680,6 +1680,26 @@ mod tests {
         assert_eq!(doc_info.code_blocks.len(), 2);
         assert_eq!(doc_info.code_blocks[0].language, "python");
         assert_eq!(doc_info.code_blocks[1].language, "js");
+    }
+
+    #[test]
+    fn rendered_mermaid_diagram_lines_do_not_wrap() {
+        let theme = Theme::dark();
+        let input =
+            "```mermaid\ngraph LR\nA[Very long start label] --> B[Very long finish label]\n```";
+        let (lines, _) = render(input, 80, &theme, false);
+        assert!(
+            lines.iter().any(|line| line.display_width() > 20),
+            "test fixture should produce a diagram wider than the wrap width"
+        );
+
+        let wrapped = crate::style::wrap_lines(&lines, 20);
+
+        assert_eq!(
+            wrapped.len(),
+            lines.len(),
+            "rendered Mermaid diagrams should remain horizontally pannable, not wrap"
+        );
     }
 
     // ── Image placeholders ──────────────────────────────────────────────────
