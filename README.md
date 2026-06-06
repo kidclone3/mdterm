@@ -32,7 +32,7 @@ A terminal-based Markdown viewer written in Rust. Renders Markdown files with sy
 - **Multiple files** — `mdterm a.md b.md`, switch with `Tab` / `Shift+Tab`
 - **HTML export** — `--export html` outputs themed, self-contained HTML
 - **Dark/light themes** — Toggle with `t`, or set via `--theme` / config file
-- **Line numbers** — Toggle with `l` for code blocks
+- **Line numbers** — Toggle with `L` for code blocks
 - **Config file** — `~/.config/mdterm/config.toml` for persistent preferences
 - **Word wrapping** — Responsive re-wrapping on terminal resize
 - **JSON viewer** — Render JSON files with syntax-colored keys, values, and structure
@@ -73,6 +73,8 @@ mdterm README.md | less -R
 |-----|--------|
 | `j` / `Down` | Scroll down one line |
 | `k` / `Up` | Scroll up one line |
+| `h` / `Left` | Pan left |
+| `l` / `Right` | Pan right |
 | `Space` / `Page Down` | Page down |
 | `b` / `Page Up` | Page up |
 | `d` / `u` (or `Ctrl+d` / `Ctrl+u`) | Half-page down / up |
@@ -99,14 +101,14 @@ mdterm README.md | less -R
 | `:` | Fuzzy heading search |
 | `f` | Link picker (open URLs / follow local links) |
 | `t` | Toggle dark/light theme |
-| `l` | Toggle line numbers in code blocks |
+| `L` | Toggle line numbers in code blocks |
 | Click heading | Copy heading section to clipboard |
 | Click list | Copy entire list to clipboard |
 | Click code block | Copy code block to clipboard |
 | `Y` | Copy entire document to clipboard |
 | `c` | Copy nearest code block to clipboard |
 | `Tab` / `Shift+Tab` | Switch between files |
-| `h` / `?` / `F1` | Help screen |
+| `?` / `F1` | Help screen |
 | `q` / `Ctrl+C` | Quit |
 
 ### Slide Mode (`--slides`)

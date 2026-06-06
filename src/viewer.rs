@@ -16,13 +16,15 @@ use crossterm::{
     },
 };
 
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::markdown::SyntectRes;
 use crate::style::{DocumentInfo, Line, LineMeta, StyledSpan, wrap_lines};
 use crate::theme::Theme;
 
 // ── Public API ──────────────────────────────────────────────────────────────
+
+const HORIZONTAL_SCROLL_STEP: usize = 8;
 
 pub struct ViewerOptions {
     pub files: Vec<String>,
@@ -48,7 +50,9 @@ pub fn run(opts: ViewerOptions) -> io::Result<()> {
         let old_offset = state.offset;
         let max_offset = state.max_offset();
         state.offset = state.offset.min(max_offset);
-        if state.offset != old_offset {
+        let old_h_offset = state.h_offset;
+        state.clamp_h_offset();
+        if state.offset != old_offset || state.h_offset != old_h_offset {
             state.dirty = true;
         }
 
@@ -256,24 +260,20 @@ fn json_nav_active(state: &ViewerState) -> bool {
 ///
 /// - `F1` — from any mode.
 /// - `?`  — from any mode except text-input modes. Ctrl-guarded.
-/// - `h` / `H` — only from Normal (to open) or Help (to close), Ctrl-guarded,
-///   and yields to slide-mode and JSON navigation which bind `h` themselves.
+/// - `h` / `H` — only from Help (to close), Ctrl-guarded. Normal mode uses
+///   `h` for horizontal panning and `H` for line numbers.
 fn is_help_toggle(
     code: KeyCode,
     modifiers: KeyModifiers,
     mode: ViewMode,
-    slide_mode: bool,
-    json_nav: bool,
+    _slide_mode: bool,
+    _json_nav: bool,
 ) -> bool {
     let ctrl = modifiers.contains(KeyModifiers::CONTROL);
     match code {
         KeyCode::F(1) => true,
         KeyCode::Char('?') if !ctrl => !mode.accepts_text_input(),
-        KeyCode::Char('h') | KeyCode::Char('H') if !ctrl => match mode {
-            ViewMode::Help => true,
-            ViewMode::Normal => !slide_mode && !json_nav,
-            _ => false,
-        },
+        KeyCode::Char('h') | KeyCode::Char('H') if !ctrl => mode == ViewMode::Help,
         _ => false,
     }
 }
@@ -292,6 +292,7 @@ struct ViewerState {
     wrapped: Vec<Line>,
     doc_info: DocumentInfo,
     offset: usize,
+    h_offset: usize,
     cols: u16,
     rows: u16,
 
@@ -414,6 +415,7 @@ impl ViewerState {
                 code_blocks: Vec::new(),
             },
             offset: 0,
+            h_offset: 0,
             cols,
             rows,
             syntect_res: SyntectRes::load(),
@@ -464,8 +466,33 @@ impl ViewerState {
         }
     }
 
+    fn viewport_content_width(&self) -> usize {
+        (self.cols as usize).saturating_sub(4)
+    }
+
     fn viewport(&self) -> usize {
         (self.rows as usize).saturating_sub(2)
+    }
+
+    fn horizontal_scroll_enabled(&self) -> bool {
+        !self.slide_mode && self.json_view.is_none()
+    }
+
+    fn max_h_offset(&self) -> usize {
+        if !self.horizontal_scroll_enabled() {
+            return 0;
+        }
+        let widest = self
+            .wrapped
+            .iter()
+            .map(Line::display_width)
+            .max()
+            .unwrap_or(0);
+        widest.saturating_sub(self.viewport_content_width())
+    }
+
+    fn clamp_h_offset(&mut self) {
+        self.h_offset = self.h_offset.min(self.max_h_offset());
     }
 
     fn link_picker_visible_entries(&self) -> usize {
@@ -596,6 +623,7 @@ impl ViewerState {
 
         self.finalize_layout();
         self.offset = saved_offset.min(self.max_offset());
+        self.clamp_h_offset();
         self.dirty = true;
     }
 
@@ -940,7 +968,12 @@ impl ViewerState {
         if term_row < 1 || term_col < Self::GUTTER_COLS {
             return None;
         }
-        let content_col = term_col - Self::GUTTER_COLS;
+        let content_col = term_col - Self::GUTTER_COLS
+            + if self.horizontal_scroll_enabled() {
+                self.h_offset
+            } else {
+                0
+            };
         let (line_idx, slide_end) = if self.slide_mode {
             let start = self
                 .slide_boundaries
@@ -1633,7 +1666,7 @@ fn handle_normal(state: &mut ViewerState, code: KeyCode, mods: KeyModifiers) -> 
         }
 
         // Line numbers toggle
-        KeyCode::Char('l') => {
+        KeyCode::Char('L') => {
             state.line_numbers = !state.line_numbers;
             state.rebuild();
             state.set_toast(if state.line_numbers {
@@ -1771,6 +1804,12 @@ fn handle_normal(state: &mut ViewerState, code: KeyCode, mods: KeyModifiers) -> 
         }
 
         // Navigation
+        KeyCode::Left | KeyCode::Char('h') => {
+            state.h_offset = state.h_offset.saturating_sub(HORIZONTAL_SCROLL_STEP);
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            state.h_offset = (state.h_offset + HORIZONTAL_SCROLL_STEP).min(state.max_h_offset());
+        }
         KeyCode::Down | KeyCode::Char('j') => {
             state.offset = (state.offset + 1).min(max_offset);
         }
@@ -2425,6 +2464,11 @@ fn render_frame(stdout: &mut io::Stdout, state: &mut ViewerState) -> io::Result<
     let width = state.cols as usize;
     let viewport = state.viewport();
     let content_width = width.saturating_sub(4);
+    let h_offset = if state.horizontal_scroll_enabled() {
+        state.h_offset
+    } else {
+        0
+    };
     let theme = &state.theme;
 
     // Synchronized output: batch all writes so the terminal renders them atomically,
@@ -2630,8 +2674,10 @@ fn render_frame(stdout: &mut io::Stdout, state: &mut ViewerState) -> io::Result<
                     &highlighted
                 };
 
+                let visible_spans = clip_spans(spans, h_offset, content_width);
+
                 let mut col = 0;
-                for span in spans {
+                for span in &visible_spans {
                     write_span(stdout, span, Some(line_bg))?;
                     col += UnicodeWidthStr::width(span.text.as_str());
                 }
@@ -2961,7 +3007,7 @@ fn render_status_bar(stdout: &mut io::Stdout, state: &ViewerState) -> io::Result
     };
     let loading_len = loading_label.chars().count();
 
-    let hint = " / search · o toc · f links · t theme · ? help ";
+    let hint = " h/l pan · / search · o toc · f links · L lines · ? help ";
     let hint_len = hint.chars().count();
     let needed = 4 + hint_len + loading_len + pos_len;
     let (show_hint, fill) = if width > needed {
@@ -3601,6 +3647,8 @@ pub(crate) fn help_sections() -> &'static [HelpSection] {
             entries: &[
                 ("j / ↓", "Scroll down one line"),
                 ("k / ↑", "Scroll up one line"),
+                ("h / ←", "Pan left"),
+                ("l / →", "Pan right"),
                 ("d / Ctrl+d", "Scroll down half page"),
                 ("u / Ctrl+u", "Scroll up half page"),
                 ("Space / PgDn", "Scroll down full page"),
@@ -3623,7 +3671,7 @@ pub(crate) fn help_sections() -> &'static [HelpSection] {
                 ("o", "Table of contents"),
                 ("f", "Link picker (open URLs)"),
                 (":", "Fuzzy heading jump"),
-                ("h / ? / F1", "This help screen"),
+                ("? / F1", "This help screen"),
             ],
         },
         HelpSection {
@@ -3633,7 +3681,7 @@ pub(crate) fn help_sections() -> &'static [HelpSection] {
                 ("Y", "Copy full document to clipboard"),
                 ("c", "Copy nearest code block"),
                 ("t", "Toggle dark / light theme"),
-                ("l", "Toggle line numbers"),
+                ("L", "Toggle line numbers"),
                 ("m", "Toggle mouse capture (for text select)"),
             ],
         },
@@ -3848,6 +3896,53 @@ fn format_position(lines: &[Line], offset: usize, viewport: usize) -> String {
     }
 }
 
+fn clip_spans(spans: &[StyledSpan], start_col: usize, width: usize) -> Vec<StyledSpan> {
+    if width == 0 {
+        return Vec::new();
+    }
+
+    let end_col = start_col.saturating_add(width);
+    let mut result = Vec::new();
+    let mut col = 0usize;
+
+    for span in spans {
+        let mut text = String::new();
+
+        for ch in span.text.chars() {
+            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            let next_col = col.saturating_add(ch_width);
+
+            let visible = if ch_width == 0 {
+                col >= start_col && col < end_col
+            } else {
+                col >= start_col && next_col <= end_col
+            };
+
+            if visible {
+                text.push(ch);
+            }
+
+            col = next_col;
+            if col >= end_col && ch_width > 0 {
+                break;
+            }
+        }
+
+        if !text.is_empty() {
+            result.push(StyledSpan {
+                text,
+                style: span.style.clone(),
+            });
+        }
+
+        if col >= end_col {
+            break;
+        }
+    }
+
+    result
+}
+
 fn apply_search_highlights(
     spans: &[StyledSpan],
     highlights: &[(usize, usize, bool)],
@@ -4056,9 +4151,9 @@ mod tests {
     }
 
     #[test]
-    fn h_opens_from_normal_and_closes_from_help_only() {
+    fn h_closes_from_help_only() {
         for &m in ALL_MODES {
-            let expected = matches!(m, ViewMode::Normal | ViewMode::Help);
+            let expected = m == ViewMode::Help;
             for code in [KeyCode::Char('h'), KeyCode::Char('H')] {
                 assert_eq!(
                     toggle(code, KeyModifiers::NONE, m),
@@ -4087,8 +4182,9 @@ mod tests {
     }
 
     #[test]
-    fn h_yields_to_slide_and_json_nav_but_question_mark_and_f1_do_not() {
-        // h/H must not steal focus from slide-mode prev-slide or JSON navigation
+    fn h_never_opens_help_but_question_mark_and_f1_do() {
+        // h/H must not steal focus from normal-mode horizontal pan, slide-mode
+        // previous slide, JSON navigation, or the line-number toggle on H.
         for &(slide, json) in &[(true, false), (false, true), (true, true)] {
             for code in [KeyCode::Char('h'), KeyCode::Char('H')] {
                 assert!(
