@@ -274,6 +274,7 @@ pub(crate) struct NodeLayout {
     pub(crate) center_x: usize,
     pub(crate) top_y: usize,
     pub(crate) width: usize,
+    pub(crate) height: usize,
 }
 
 fn assign_layers(graph: &Graph) -> Vec<Vec<String>> {
@@ -298,9 +299,9 @@ fn assign_layers(graph: &Graph) -> Vec<Vec<String>> {
     let mut topo_order: Vec<String> = Vec::new();
     let mut in_deg = in_degree.clone();
 
-    for (&id, &deg) in &in_deg {
-        if deg == 0 {
-            queue.push_back(id);
+    for id in &graph.node_order {
+        if in_deg.get(id.as_str()).copied().unwrap_or(0) == 0 {
+            queue.push_back(id.as_str());
         }
     }
 
@@ -510,17 +511,50 @@ fn lr_node_extra_gap(graph: &Graph, node_id: &str) -> usize {
 
     match degree {
         0 | 1 => 0,
-        2 | 3 => 1,
-        _ => 2,
+        2 | 3 => 2,
+        4 | 5 => 3,
+        _ => 4,
     }
 }
 
-fn lr_layer_height(layer: &[String], graph: &Graph, node_height: usize, base_gap: usize) -> usize {
+fn lr_node_port_count(graph: &Graph, node_id: &str) -> usize {
+    let outgoing = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.from == node_id)
+        .count();
+    let incoming = graph.edges.iter().filter(|edge| edge.to == node_id).count();
+    outgoing.max(incoming).max(1)
+}
+
+fn lr_node_height(graph: &Graph, node_id: &str) -> usize {
+    let port_count = lr_node_port_count(graph, node_id);
+    if port_count <= 1 {
+        3
+    } else {
+        port_count * 3 + 1
+    }
+}
+
+fn lr_layer_height(
+    layer: &[String],
+    graph: &Graph,
+    node_heights: &HashMap<String, usize>,
+    base_gap: usize,
+) -> usize {
     if layer.is_empty() {
         return 0;
     }
 
-    let nodes_height = layer.len() * node_height;
+    let nodes_height = layer
+        .iter()
+        .map(|id| {
+            node_heights
+                .get(id)
+                .copied()
+                .unwrap_or_else(|| lr_node_height(graph, id))
+        })
+        .sum::<usize>();
     let gaps_height = layer
         .windows(2)
         .map(|pair| {
@@ -571,6 +605,23 @@ pub(crate) fn junction_char(connects: u8) -> char {
         c if c == CONN_LEFT => '─',
         c if c == CONN_RIGHT => '─',
         _ => '·',
+    }
+}
+
+fn edge_char_connects(ch: char) -> Option<u8> {
+    match ch {
+        '│' => Some(CONN_UP | CONN_DOWN),
+        '─' => Some(CONN_LEFT | CONN_RIGHT),
+        '╭' => Some(CONN_DOWN | CONN_RIGHT),
+        '╮' => Some(CONN_DOWN | CONN_LEFT),
+        '╰' => Some(CONN_UP | CONN_RIGHT),
+        '╯' => Some(CONN_UP | CONN_LEFT),
+        '├' => Some(CONN_UP | CONN_DOWN | CONN_RIGHT),
+        '┤' => Some(CONN_UP | CONN_DOWN | CONN_LEFT),
+        '┬' => Some(CONN_DOWN | CONN_LEFT | CONN_RIGHT),
+        '┴' => Some(CONN_UP | CONN_LEFT | CONN_RIGHT),
+        '┼' => Some(CONN_UP | CONN_DOWN | CONN_LEFT | CONN_RIGHT),
+        _ => None,
     }
 }
 
@@ -628,9 +679,18 @@ impl Canvas {
     pub(crate) fn set_edge(&mut self, x: usize, y: usize, ch: char, fg: Option<Color>) {
         if y < self.height && x < self.width && !self.cells[y][x].is_node {
             let cell = &mut self.cells[y][x];
-            cell.ch = ch;
-            cell.fg = fg;
-            cell.connects = 0;
+            if let (Some(existing), Some(incoming)) =
+                (edge_char_connects(cell.ch), edge_char_connects(ch))
+            {
+                cell.connects = existing | incoming;
+                cell.ch = junction_char(cell.connects);
+            } else {
+                cell.ch = ch;
+                cell.connects = edge_char_connects(ch).unwrap_or(0);
+            }
+            if fg.is_some() {
+                cell.fg = fg;
+            }
         }
     }
 
@@ -694,6 +754,61 @@ impl Canvas {
             self.set_node(x + i, y + 2, h, border_fg);
         }
         self.set_node(x + width - 1, y + 2, br, border_fg);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_node_with_height(
+        &mut self,
+        cx: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        label: &str,
+        shape: NodeShape,
+        border_fg: Option<Color>,
+        text_fg: Option<Color>,
+    ) {
+        let height = height.max(3);
+        let x = cx.saturating_sub(width / 2);
+
+        let (tl, tr, bl, br, h, v) = match shape {
+            NodeShape::Rectangle => ('┌', '┐', '└', '┘', '─', '│'),
+            NodeShape::Rounded | NodeShape::Circle => ('╭', '╮', '╰', '╯', '─', '│'),
+            NodeShape::Diamond => ('◆', '◆', '◆', '◆', '─', '│'),
+        };
+
+        self.set_node(x, y, tl, border_fg);
+        for i in 1..width - 1 {
+            self.set_node(x + i, y, h, border_fg);
+        }
+        self.set_node(x + width - 1, y, tr, border_fg);
+
+        let label_y = y + height / 2;
+        let label_chars: Vec<char> = label.chars().collect();
+        let padding = (width - 2).saturating_sub(label_chars.len());
+        let left_pad = padding / 2;
+
+        for row_y in (y + 1)..(y + height - 1) {
+            self.set_node(x, row_y, v, border_fg);
+            for i in 1..width - 1 {
+                self.set_node(x + i, row_y, ' ', text_fg);
+            }
+            if row_y == label_y {
+                for (i, &ch) in label_chars.iter().enumerate() {
+                    if x + 1 + left_pad + i < x + width - 1 {
+                        self.set_node(x + 1 + left_pad + i, row_y, ch, text_fg);
+                    }
+                }
+            }
+            self.set_node(x + width - 1, row_y, v, border_fg);
+        }
+
+        let bottom_y = y + height - 1;
+        self.set_node(x, bottom_y, bl, border_fg);
+        for i in 1..width - 1 {
+            self.set_node(x + i, bottom_y, h, border_fg);
+        }
+        self.set_node(x + width - 1, bottom_y, br, border_fg);
     }
 
     fn set_node_bg(&mut self, x: usize, y: usize, ch: char, fg: Option<Color>, bg: Option<Color>) {
@@ -1119,6 +1234,7 @@ fn render_td(graph: &Graph, theme: &Theme) -> Option<(Vec<Vec<StyledSpan>>, usiz
                     center_x: cx,
                     top_y: y,
                     width: w,
+                    height: node_height,
                 },
             );
         }
@@ -1150,8 +1266,8 @@ fn render_td(graph: &Graph, theme: &Theme) -> Option<(Vec<Vec<StyledSpan>>, usiz
 
 fn render_lr(graph: &Graph, theme: &Theme) -> Option<(Vec<Vec<StyledSpan>>, usize)> {
     let node_height: usize = 3;
-    let node_h_gap: usize = 12; // horizontal gap between columns for edge routing
-    let v_gap: usize = 2; // vertical gap between nodes in same column
+    let node_h_gap: usize = 18; // horizontal gap between columns for edge routing
+    let v_gap: usize = 3; // vertical gap between nodes in same column
 
     let mut layers = assign_layers(graph);
     order_within_layers(&mut layers, graph);
@@ -1162,6 +1278,11 @@ fn render_lr(graph: &Graph, theme: &Theme) -> Option<(Vec<Vec<StyledSpan>>, usiz
     for (id, node) in &graph.nodes {
         widths.insert(id.clone(), node_box_width(node));
     }
+    let node_heights: HashMap<String, usize> = graph
+        .nodes
+        .keys()
+        .map(|id| (id.clone(), lr_node_height(graph, id)))
+        .collect();
 
     // Column widths (max node width per layer)
     let col_widths: Vec<usize> = layers
@@ -1177,7 +1298,7 @@ fn render_lr(graph: &Graph, theme: &Theme) -> Option<(Vec<Vec<StyledSpan>>, usiz
 
     let layer_heights: Vec<usize> = layers
         .iter()
-        .map(|layer| lr_layer_height(layer, graph, node_height, v_gap))
+        .map(|layer| lr_layer_height(layer, graph, &node_heights, v_gap))
         .collect();
     let max_layer_height = layer_heights.iter().copied().max().unwrap_or(node_height);
 
@@ -1206,11 +1327,21 @@ fn render_lr(graph: &Graph, theme: &Theme) -> Option<(Vec<Vec<StyledSpan>>, usiz
 
         for (node_idx, id) in layer.iter().enumerate() {
             let w = widths.get(id).copied().unwrap_or(7);
+            let h = node_heights.get(id).copied().unwrap_or(node_height);
             let cx = col_x + col_w / 2;
             layer_by_id.insert(id.clone(), layer_idx);
 
             if let Some(node) = graph.nodes.get(id) {
-                canvas.draw_node(cx, y, w, &node.label, node.shape, border_fg, text_fg);
+                canvas.draw_node_with_height(
+                    cx,
+                    y,
+                    w,
+                    h,
+                    &node.label,
+                    node.shape,
+                    border_fg,
+                    text_fg,
+                );
             }
 
             positions.insert(
@@ -1219,14 +1350,14 @@ fn render_lr(graph: &Graph, theme: &Theme) -> Option<(Vec<Vec<StyledSpan>>, usiz
                     center_x: cx,
                     top_y: y,
                     width: w,
+                    height: h,
                 },
             );
 
             if node_idx + 1 < layer.len() {
                 let next_id = &layer[node_idx + 1];
-                y += node_height
-                    + v_gap
-                    + lr_node_extra_gap(graph, id).max(lr_node_extra_gap(graph, next_id));
+                y +=
+                    h + v_gap + lr_node_extra_gap(graph, id).max(lr_node_extra_gap(graph, next_id));
             }
         }
 
@@ -1234,14 +1365,23 @@ fn render_lr(graph: &Graph, theme: &Theme) -> Option<(Vec<Vec<StyledSpan>>, usiz
     }
 
     // Draw edges
-    let lane_counts = lr_lane_counts(graph, &positions, &layer_by_id);
+    let (outgoing_ports, incoming_ports) = lr_edge_port_maps(graph, &positions);
+    let lane_counts = lr_lane_counts(
+        graph,
+        &positions,
+        &layer_by_id,
+        &outgoing_ports,
+        &incoming_ports,
+    );
     let mut lane_seen: HashMap<(usize, usize), usize> = HashMap::new();
     for (edge_idx, edge) in graph.edges.iter().enumerate() {
         if let (Some(src), Some(dst)) = (positions.get(&edge.from), positions.get(&edge.to)) {
-            let src_right_x = src.center_x + src.width / 2;
-            let src_cy = src.top_y + 1;
-            let dst_left_x = dst.center_x.saturating_sub(dst.width / 2);
-            let dst_cy = dst.top_y + 1;
+            let src_right_x = node_right_x(src);
+            let dst_left_x = node_left_x(dst);
+            let (src_port_idx, src_port_count) = outgoing_ports[edge_idx];
+            let (dst_port_idx, dst_port_count) = incoming_ports[edge_idx];
+            let src_cy = lr_edge_port_y(src.top_y, src.height, src_port_idx, src_port_count);
+            let dst_cy = lr_edge_port_y(dst.top_y, dst.height, dst_port_idx, dst_port_count);
             let edge_fg = Some(edge_color(theme, edge_idx));
             let mid_x_override = if src_cy == dst_cy {
                 None
@@ -1283,20 +1423,32 @@ fn lr_lane_key(edge: &Edge, layer_by_id: &HashMap<String, usize>) -> Option<(usi
     Some((*layer_by_id.get(&edge.from)?, *layer_by_id.get(&edge.to)?))
 }
 
+fn node_left_x(layout: &NodeLayout) -> usize {
+    layout.center_x.saturating_sub(layout.width / 2)
+}
+
+fn node_right_x(layout: &NodeLayout) -> usize {
+    node_left_x(layout) + layout.width.saturating_sub(1)
+}
+
 fn lr_lane_counts(
     graph: &Graph,
     positions: &HashMap<String, NodeLayout>,
     layer_by_id: &HashMap<String, usize>,
+    outgoing_ports: &[(usize, usize)],
+    incoming_ports: &[(usize, usize)],
 ) -> HashMap<(usize, usize), usize> {
     let mut counts = HashMap::new();
-    for edge in &graph.edges {
+    for (edge_idx, edge) in graph.edges.iter().enumerate() {
         if let (Some(src), Some(dst), Some(key)) = (
             positions.get(&edge.from),
             positions.get(&edge.to),
             lr_lane_key(edge, layer_by_id),
         ) {
-            let src_cy = src.top_y + 1;
-            let dst_cy = dst.top_y + 1;
+            let (src_port_idx, src_port_count) = outgoing_ports[edge_idx];
+            let (dst_port_idx, dst_port_count) = incoming_ports[edge_idx];
+            let src_cy = lr_edge_port_y(src.top_y, src.height, src_port_idx, src_port_count);
+            let dst_cy = lr_edge_port_y(dst.top_y, dst.height, dst_port_idx, dst_port_count);
             if src_cy != dst_cy {
                 *counts.entry(key).or_insert(0) += 1;
             }
@@ -1325,19 +1477,182 @@ fn lr_lane_mid_x(
     Some(first + ((lane + 1) * slots / (lane_count + 1)))
 }
 
+fn lr_edge_port_y(top_y: usize, height: usize, port_idx: usize, port_count: usize) -> usize {
+    if port_count <= 1 {
+        return top_y + height / 2;
+    }
+
+    let content_rows = height.saturating_sub(2).max(1);
+    if content_rows <= 1 {
+        return top_y + 1;
+    }
+
+    let slot = port_idx.min(port_count - 1) * (content_rows - 1) / (port_count - 1);
+    top_y + 1 + slot
+}
+
+fn lr_edge_port_maps(
+    graph: &Graph,
+    positions: &HashMap<String, NodeLayout>,
+) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+    let mut outgoing_ports = vec![(0, 1); graph.edges.len()];
+    let mut incoming_ports = vec![(0, 1); graph.edges.len()];
+
+    let mut outgoing_by_node: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut incoming_by_node: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (edge_idx, edge) in graph.edges.iter().enumerate() {
+        outgoing_by_node
+            .entry(edge.from.as_str())
+            .or_default()
+            .push(edge_idx);
+        incoming_by_node
+            .entry(edge.to.as_str())
+            .or_default()
+            .push(edge_idx);
+    }
+
+    for edge_indices in outgoing_by_node.values_mut() {
+        edge_indices.sort_by_key(|&edge_idx| {
+            let edge = &graph.edges[edge_idx];
+            let dst_y = positions
+                .get(&edge.to)
+                .map(|layout| layout.top_y + layout.height / 2)
+                .unwrap_or(usize::MAX);
+            (dst_y, edge_idx)
+        });
+        let port_count = edge_indices.len();
+        for (port_idx, &edge_idx) in edge_indices.iter().enumerate() {
+            outgoing_ports[edge_idx] = (port_idx, port_count);
+        }
+    }
+
+    for edge_indices in incoming_by_node.values_mut() {
+        edge_indices.sort_by_key(|&edge_idx| {
+            let edge = &graph.edges[edge_idx];
+            let src_y = positions
+                .get(&edge.from)
+                .map(|layout| layout.top_y + layout.height / 2)
+                .unwrap_or(usize::MAX);
+            (src_y, edge_idx)
+        });
+        let port_count = edge_indices.len();
+        for (port_idx, &edge_idx) in edge_indices.iter().enumerate() {
+            incoming_ports[edge_idx] = (port_idx, port_count);
+        }
+    }
+
+    (outgoing_ports, incoming_ports)
+}
+
 fn edge_color(theme: &Theme, index: usize) -> Color {
-    let colors = [
-        theme.h2,
-        theme.h3,
-        theme.h4,
-        theme.h5,
-        theme.link,
-        theme.inline_code_fg,
-        theme.math_fg,
-        theme.json_string,
-        theme.json_number,
-        theme.json_bool,
-    ];
+    let colors = if theme.name() == "dark" {
+        [
+            Color::Rgb {
+                r: 0,
+                g: 215,
+                b: 255,
+            },
+            Color::Rgb {
+                r: 255,
+                g: 176,
+                b: 0,
+            },
+            Color::Rgb {
+                r: 255,
+                g: 95,
+                b: 215,
+            },
+            Color::Rgb {
+                r: 95,
+                g: 255,
+                b: 135,
+            },
+            Color::Rgb {
+                r: 255,
+                g: 95,
+                b: 95,
+            },
+            Color::Rgb {
+                r: 175,
+                g: 135,
+                b: 255,
+            },
+            Color::Rgb {
+                r: 255,
+                g: 255,
+                b: 95,
+            },
+            Color::Rgb {
+                r: 95,
+                g: 175,
+                b: 255,
+            },
+            Color::Rgb {
+                r: 0,
+                g: 255,
+                b: 215,
+            },
+            Color::Rgb {
+                r: 255,
+                g: 135,
+                b: 95,
+            },
+        ]
+    } else {
+        [
+            Color::Rgb {
+                r: 0,
+                g: 92,
+                b: 197,
+            },
+            Color::Rgb {
+                r: 211,
+                g: 86,
+                b: 0,
+            },
+            Color::Rgb {
+                r: 159,
+                g: 0,
+                b: 136,
+            },
+            Color::Rgb {
+                r: 0,
+                g: 115,
+                b: 73,
+            },
+            Color::Rgb {
+                r: 203,
+                g: 36,
+                b: 49,
+            },
+            Color::Rgb {
+                r: 93,
+                g: 63,
+                b: 211,
+            },
+            Color::Rgb {
+                r: 140,
+                g: 104,
+                b: 0,
+            },
+            Color::Rgb {
+                r: 0,
+                g: 118,
+                b: 168,
+            },
+            Color::Rgb {
+                r: 0,
+                g: 128,
+                b: 128,
+            },
+            Color::Rgb {
+                r: 170,
+                g: 70,
+                b: 20,
+            },
+        ]
+    };
+
     colors[index % colors.len()]
 }
 
@@ -1453,6 +1768,16 @@ mod tests {
             1
         );
         assert_eq!(adjacent_layer_crossing_score(&aligned_layers, &graph, 0), 0);
+    }
+
+    #[test]
+    fn set_edge_marks_crossing_segments() {
+        let mut canvas = Canvas::new(3, 3);
+
+        canvas.set_edge(1, 1, '─', None);
+        canvas.set_edge(1, 1, '│', None);
+
+        assert_eq!(canvas.cells[1][1].ch, '┼');
     }
 
     #[test]
