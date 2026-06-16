@@ -1674,6 +1674,26 @@ mod tests {
     }
 
     #[test]
+    fn rendered_code_block_lines_do_not_wrap() {
+        let theme = Theme::dark();
+        let input =
+            "```go\nfunc fibonacci(n int) int { return fibonacci(n-1) + fibonacci(n-2) }\n```";
+        let (lines, _) = render(input, 80, &theme, false);
+        assert!(
+            lines.iter().any(|line| line.display_width() > 20),
+            "test fixture should produce a code block wider than the wrap width"
+        );
+
+        let wrapped = crate::style::wrap_lines(&lines, 20);
+
+        assert_eq!(
+            wrapped.len(),
+            lines.len(),
+            "rendered code blocks should remain horizontally pannable, not wrap"
+        );
+    }
+
+    #[test]
     fn multiple_code_blocks_tracked() {
         let input = "```python\nprint(1)\n```\n\n```js\nconsole.log(2)\n```";
         let (_, doc_info) = render_test(input);

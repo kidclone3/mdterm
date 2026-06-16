@@ -97,7 +97,10 @@ pub fn wrap_lines(lines: &[Line], width: usize) -> Vec<Line> {
     for line in lines {
         if line.spans.is_empty()
             || line.display_width() <= width
-            || matches!(line.meta, LineMeta::DiagramContent { .. })
+            || matches!(
+                line.meta,
+                LineMeta::CodeContent { .. } | LineMeta::DiagramContent { .. }
+            )
         {
             result.push(line.clone());
         } else if line
@@ -353,18 +356,15 @@ mod tests {
     }
 
     #[test]
-    fn code_meta_propagated_to_first_wrapped_line_only() {
+    fn code_content_lines_do_not_wrap() {
         let mut line = plain_line("some very long code line content here");
         line.meta = LineMeta::CodeContent { block_id: 5 };
         let wrapped = wrap_lines(&[line], 10);
-        assert!(wrapped.len() >= 2);
+        assert_eq!(wrapped.len(), 1);
         assert!(matches!(
             wrapped[0].meta,
             LineMeta::CodeContent { block_id: 5 }
         ));
-        for l in &wrapped[1..] {
-            assert!(matches!(l.meta, LineMeta::None));
-        }
     }
 
     #[test]
