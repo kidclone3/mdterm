@@ -620,7 +620,7 @@ impl ViewerState {
                     cw,
                     &self.theme,
                     self.line_numbers,
-                    true,
+                    self.image_cache.protocol().renders_crisp_images(),
                     &self.syntect_res,
                 )
             }
@@ -631,7 +631,7 @@ impl ViewerState {
                 cw,
                 &self.theme,
                 self.line_numbers,
-                true,
+                self.image_cache.protocol().renders_crisp_images(),
                 &self.syntect_res,
             )
         };
