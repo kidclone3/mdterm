@@ -103,6 +103,116 @@ fn parse_mermaid(code: &str) -> Option<Graph> {
     })
 }
 
+#[derive(Clone, Copy)]
+enum StateEndpointRole {
+    Source,
+    Target,
+}
+
+fn parse_state_diagram(code: &str) -> Option<Graph> {
+    let mut direction = Direction::TopDown;
+    let mut nodes: HashMap<String, Node> = HashMap::new();
+    let mut edges: Vec<Edge> = Vec::new();
+    let mut node_order: Vec<String> = Vec::new();
+
+    for raw in code.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with("%%") {
+            continue;
+        }
+
+        if matches!(line, "stateDiagram" | "stateDiagram-v2") {
+            continue;
+        }
+
+        if let Some(dir) = line.strip_prefix("direction ") {
+            direction = match dir.trim() {
+                "LR" | "RL" => Direction::LeftRight,
+                _ => Direction::TopDown,
+            };
+            continue;
+        }
+
+        if line.starts_with("state ")
+            || line.starts_with("note ")
+            || line == "end note"
+            || line == "end"
+            || line.starts_with("classDef ")
+            || line.starts_with("class ")
+        {
+            continue;
+        }
+
+        let Some((from_raw, rest)) = line.split_once("-->") else {
+            continue;
+        };
+        let (to_raw, label) = split_state_target_and_label(rest);
+
+        let Some((from_id, from_label)) = parse_state_endpoint(from_raw, StateEndpointRole::Source)
+        else {
+            continue;
+        };
+        let Some((to_id, to_label)) = parse_state_endpoint(to_raw, StateEndpointRole::Target)
+        else {
+            continue;
+        };
+
+        register_node(&from_id, Some(from_label), &mut nodes, &mut node_order);
+        register_node(&to_id, Some(to_label), &mut nodes, &mut node_order);
+        edges.push(Edge {
+            from: from_id,
+            to: to_id,
+            label,
+        });
+    }
+
+    if nodes.is_empty() {
+        return None;
+    }
+
+    Some(Graph {
+        direction,
+        nodes,
+        edges,
+        node_order,
+    })
+}
+
+fn split_state_target_and_label(s: &str) -> (&str, Option<String>) {
+    if let Some((target, label)) = s.split_once(':') {
+        let label = label.trim();
+        (
+            target.trim(),
+            (!label.is_empty()).then(|| label.to_string()),
+        )
+    } else {
+        (s.trim(), None)
+    }
+}
+
+fn parse_state_endpoint(
+    raw: &str,
+    role: StateEndpointRole,
+) -> Option<(String, (String, NodeShape))> {
+    let state = raw.trim();
+    if state.is_empty() {
+        return None;
+    }
+
+    if state == "[*]" {
+        let id = match role {
+            StateEndpointRole::Source => "__state_start",
+            StateEndpointRole::Target => "__state_end",
+        };
+        return Some((id.to_string(), ("●".to_string(), NodeShape::Circle)));
+    }
+
+    Some((
+        state.to_string(),
+        (unquote(state).to_string(), NodeShape::Rounded),
+    ))
+}
+
 #[allow(clippy::type_complexity)]
 fn parse_node_ref(s: &str) -> Option<(String, Option<(String, NodeShape)>, &str)> {
     let s = s.trim_start();
@@ -276,6 +386,9 @@ pub(crate) struct NodeLayout {
     pub(crate) width: usize,
     pub(crate) height: usize,
 }
+
+type EdgePort = (usize, usize);
+type EdgePortMaps = (Vec<EdgePort>, Vec<EdgePort>);
 
 fn assign_layers(graph: &Graph) -> Vec<Vec<String>> {
     // Build adjacency and in-degree
@@ -679,6 +792,9 @@ impl Canvas {
     pub(crate) fn set_edge(&mut self, x: usize, y: usize, ch: char, fg: Option<Color>) {
         if y < self.height && x < self.width && !self.cells[y][x].is_node {
             let cell = &mut self.cells[y][x];
+            if cell.ch != ' ' && edge_char_connects(cell.ch).is_none() {
+                return;
+            }
             if let (Some(existing), Some(incoming)) =
                 (edge_char_connects(cell.ch), edge_char_connects(ch))
             {
@@ -1033,6 +1149,58 @@ impl Canvas {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_edge_td_back(
+        &mut self,
+        src_right_x: usize,
+        src_cy: usize,
+        dst_right_x: usize,
+        dst_cy: usize,
+        lane_x: usize,
+        label: Option<&str>,
+        edge_fg: Option<Color>,
+        label_fg: Option<Color>,
+    ) {
+        if lane_x <= src_right_x || lane_x <= dst_right_x {
+            return;
+        }
+
+        for x in (src_right_x + 1)..lane_x {
+            self.set_edge(x, src_cy, '─', edge_fg);
+        }
+
+        let src_turn = if dst_cy < src_cy { '╯' } else { '╮' };
+        self.set_edge(lane_x, src_cy, src_turn, edge_fg);
+
+        let (min_y, max_y) = if src_cy < dst_cy {
+            (src_cy, dst_cy)
+        } else {
+            (dst_cy, src_cy)
+        };
+        for y in (min_y + 1)..max_y {
+            self.set_edge(lane_x, y, '│', edge_fg);
+        }
+
+        let dst_turn = if dst_cy < src_cy { '╮' } else { '╯' };
+        self.set_edge(lane_x, dst_cy, dst_turn, edge_fg);
+
+        let entry_x = dst_right_x + 1;
+        if entry_x < lane_x {
+            self.set_edge(entry_x, dst_cy, '◀', edge_fg);
+            for x in (entry_x + 1)..lane_x {
+                self.set_edge(x, dst_cy, '─', edge_fg);
+            }
+        }
+
+        if let Some(text) = label {
+            let label_y = min_y + (max_y - min_y) / 2;
+            let label_x = lane_x + 2;
+            for (i, ch) in text.chars().enumerate() {
+                self.set(label_x + i, label_y, ch, label_fg);
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_edge_lr(
         &mut self,
         _src_cx: usize,
@@ -1161,6 +1329,33 @@ fn render_td(graph: &Graph, theme: &Theme) -> Option<(Vec<Vec<StyledSpan>>, usiz
     let mut layers = assign_layers(graph);
     order_within_layers(&mut layers, graph);
 
+    let mut layer_by_id: HashMap<String, usize> = HashMap::new();
+    for (layer_idx, layer) in layers.iter().enumerate() {
+        for id in layer {
+            layer_by_id.insert(id.clone(), layer_idx);
+        }
+    }
+
+    let mut has_back_edge = false;
+    let mut max_back_edge_label_width = 0;
+    for edge in &graph.edges {
+        let Some(&src_layer) = layer_by_id.get(&edge.from) else {
+            continue;
+        };
+        let Some(&dst_layer) = layer_by_id.get(&edge.to) else {
+            continue;
+        };
+        if src_layer >= dst_layer {
+            has_back_edge = true;
+            max_back_edge_label_width = max_back_edge_label_width.max(
+                edge.label
+                    .as_ref()
+                    .map(|label| label.chars().count())
+                    .unwrap_or(0),
+            );
+        }
+    }
+
     // Calculate node widths
     let mut widths: HashMap<String, usize> = HashMap::new();
     for (id, node) in &graph.nodes {
@@ -1178,7 +1373,12 @@ fn render_td(graph: &Graph, theme: &Theme) -> Option<(Vec<Vec<StyledSpan>>, usiz
         max_layer_width = max_layer_width.max(w);
     }
 
-    let canvas_width = max_layer_width + 6; // margin on each side
+    let back_edge_extra = if has_back_edge {
+        max_back_edge_label_width + 10
+    } else {
+        0
+    };
+    let canvas_width = max_layer_width + 6 + back_edge_extra; // margin on each side
     let canvas_height = layers.len() * (node_height + edge_gap) - edge_gap;
 
     if canvas_height == 0 {
@@ -1243,18 +1443,40 @@ fn render_td(graph: &Graph, theme: &Theme) -> Option<(Vec<Vec<StyledSpan>>, usiz
     // Draw edges
     for (edge_idx, edge) in graph.edges.iter().enumerate() {
         if let (Some(src), Some(dst)) = (positions.get(&edge.from), positions.get(&edge.to)) {
-            let src_bottom = src.top_y + 2;
-            let dst_top = dst.top_y;
             let edge_fg = Some(edge_color(theme, edge_idx));
-            canvas.draw_edge_td(
-                src.center_x,
-                src_bottom,
-                dst.center_x,
-                dst_top,
-                edge.label.as_deref(),
-                edge_fg,
-                edge_fg,
-            );
+            let src_layer = layer_by_id.get(&edge.from).copied().unwrap_or(0);
+            let dst_layer = layer_by_id.get(&edge.to).copied().unwrap_or(0);
+
+            if src_layer >= dst_layer {
+                let label_width = edge
+                    .label
+                    .as_ref()
+                    .map(|label| label.chars().count())
+                    .unwrap_or(0);
+                let lane_x = canvas_width.saturating_sub(label_width + 3);
+                canvas.draw_edge_td_back(
+                    node_right_x(src),
+                    src.top_y + src.height / 2,
+                    node_right_x(dst),
+                    dst.top_y + dst.height / 2,
+                    lane_x,
+                    edge.label.as_deref(),
+                    edge_fg,
+                    edge_fg,
+                );
+            } else {
+                let src_bottom = src.top_y + 2;
+                let dst_top = dst.top_y;
+                canvas.draw_edge_td(
+                    src.center_x,
+                    src_bottom,
+                    dst.center_x,
+                    dst_top,
+                    edge.label.as_deref(),
+                    edge_fg,
+                    edge_fg,
+                );
+            }
         }
     }
 
@@ -1491,10 +1713,7 @@ fn lr_edge_port_y(top_y: usize, height: usize, port_idx: usize, port_count: usiz
     top_y + 1 + slot
 }
 
-fn lr_edge_port_maps(
-    graph: &Graph,
-    positions: &HashMap<String, NodeLayout>,
-) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+fn lr_edge_port_maps(graph: &Graph, positions: &HashMap<String, NodeLayout>) -> EdgePortMaps {
     let mut outgoing_ports = vec![(0, 1); graph.edges.len()];
     let mut incoming_ports = vec![(0, 1); graph.edges.len()];
 
@@ -2186,8 +2405,6 @@ fn is_unsupported_diagram(kw: &str) -> bool {
         kw,
         "classDiagram"
             | "classDiagram-v2"
-            | "stateDiagram"
-            | "stateDiagram-v2"
             | "erDiagram"
             | "journey"
             | "gantt"
@@ -2224,6 +2441,13 @@ fn is_unsupported_diagram(kw: &str) -> bool {
 pub fn render_mermaid(code: &str, theme: &Theme) -> Option<(Vec<Vec<StyledSpan>>, usize)> {
     match first_diagram_keyword(code) {
         Some("sequenceDiagram") => render_sequence(code, theme),
+        Some("stateDiagram" | "stateDiagram-v2") => {
+            let graph = parse_state_diagram(code)?;
+            match graph.direction {
+                Direction::TopDown => render_td(&graph, theme),
+                Direction::LeftRight => render_lr(&graph, theme),
+            }
+        }
         Some(kw) if is_unsupported_diagram(kw) => None,
         _ => {
             let graph = parse_mermaid(code)?;
@@ -2392,7 +2616,6 @@ mod tests {
         let theme = Theme::dark();
         assert!(render_mermaid("classDiagram\n    Animal <|-- Dog", &theme).is_none());
         assert!(render_mermaid("erDiagram\n    A ||--o{ B : has", &theme).is_none());
-        assert!(render_mermaid("stateDiagram-v2\n    [*] --> Idle", &theme).is_none());
     }
 
     #[test]
@@ -2400,6 +2623,50 @@ mod tests {
         let theme = Theme::dark();
         assert!(render_mermaid("graph TD\nA[Start] --> B[End]", &theme).is_some());
         assert!(render_mermaid("flowchart LR\nA --> B", &theme).is_some());
+    }
+
+    fn state_text(input: &str) -> String {
+        let theme = Theme::dark();
+        let (rows, width) = render_mermaid(input, &theme).expect("state diagram should render");
+        assert!(width > 0, "rendered diagram should have positive width");
+        rows.iter()
+            .map(|row| row_text(row))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn state_diagram_v2_renders_transition_graph() {
+        let out = state_text(
+            "stateDiagram-v2\n    [*] --> queued\n    queued --> leased\n    queued --> canceled\n    leased --> running\n    leased --> queued: lease expired / released\n    running --> succeeded\n    running --> failed\n    running --> canceled\n    failed --> queued: retry\n    succeeded --> [*]\n    failed --> [*]\n    canceled --> [*]",
+        );
+
+        for text in [
+            "queued",
+            "leased",
+            "running",
+            "succeeded",
+            "failed",
+            "canceled",
+            "lease expired / released",
+            "retry",
+        ] {
+            assert!(out.contains(text), "render should contain {text:?}");
+        }
+        assert!(out.contains('●'), "start/end pseudo states should render");
+    }
+
+    #[test]
+    fn state_diagram_back_edge_label_is_visible() {
+        let out = state_text(
+            "stateDiagram-v2\n    [*] --> queued\n    queued --> failed\n    failed --> queued: retry",
+        );
+
+        assert!(out.contains("retry"), "back-edge label should be rendered");
+        assert!(
+            out.contains('◀'),
+            "back edge should enter the destination from the side"
+        );
     }
 
     #[test]
