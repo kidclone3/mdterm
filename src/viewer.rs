@@ -12,7 +12,7 @@ use crossterm::{
     style::{Attribute, Color, Print, SetAttribute, SetBackgroundColor, SetForegroundColor},
     terminal::{
         BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
-        disable_raw_mode, enable_raw_mode, size,
+        ScrollDown, ScrollUp, disable_raw_mode, enable_raw_mode, size,
     },
 };
 
@@ -370,6 +370,31 @@ struct ViewerState {
 
     // Cached parsed JSON value (avoids re-parsing on every rebuild)
     cached_json: Option<serde_json::Value>,
+
+    // Bumped whenever `wrapped` is (re)built or finalized so the scroll fast
+    // path can detect that the on-screen content is no longer valid.
+    content_generation: u64,
+
+    // Snapshot of the last rendered frame. Used to detect pure vertical
+    // scrolls and reuse the terminal's own scroll instead of repainting every
+    // row (mirrors how terminal scrollback stays smooth).
+    last_frame: Option<LastFrame>,
+}
+
+/// Snapshot of what was last sent to the terminal, used by the scroll fast
+/// path to decide whether a new frame is just a vertical shift of the previous
+/// one. When it is, we issue a terminal scroll-region command and only repaint
+/// the newly exposed rows instead of the whole viewport.
+#[derive(Clone, Copy)]
+struct LastFrame {
+    offset: usize,
+    h_offset: usize,
+    cols: u16,
+    rows: u16,
+    viewport: usize,
+    current_file_idx: usize,
+    theme_is_dark: bool,
+    content_generation: u64,
 }
 
 #[derive(Clone)]
@@ -450,6 +475,8 @@ impl ViewerState {
             nav_history: Vec::new(),
             json_view: None,
             cached_json: None,
+            content_generation: 0,
+            last_frame: None,
         }
     }
 
@@ -493,6 +520,32 @@ impl ViewerState {
 
     fn clamp_h_offset(&mut self) {
         self.h_offset = self.h_offset.min(self.max_h_offset());
+    }
+
+    /// Returns true if any image placeholder line falls within the wrapped-line
+    /// range `[lo, hi)` (exclusive end). Used by the scroll fast path to bail
+    /// out: Kitty/iTerm2 image placements don't travel with a terminal scroll
+    /// region, so any frame involving an image must be fully repainted.
+    fn has_image_in_range(&self, lo: usize, hi: usize) -> bool {
+        let start = lo.min(self.wrapped.len());
+        let end = hi.min(self.wrapped.len());
+        self.wrapped[start..end]
+            .iter()
+            .any(|l| matches!(l.meta, LineMeta::Image { .. }))
+    }
+
+    /// Build a snapshot describing the frame currently on screen.
+    fn snapshot_frame(&self) -> LastFrame {
+        LastFrame {
+            offset: self.offset,
+            h_offset: self.h_offset,
+            cols: self.cols,
+            rows: self.rows,
+            viewport: self.viewport(),
+            current_file_idx: self.current_file_idx,
+            theme_is_dark: self.theme.name() == "dark",
+            content_generation: self.content_generation,
+        }
     }
 
     fn link_picker_visible_entries(&self) -> usize {
@@ -603,6 +656,7 @@ impl ViewerState {
 
         self.wrapped = wrap_lines(&lines, cw);
         self.doc_info = doc_info;
+        self.content_generation = self.content_generation.wrapping_add(1);
 
         // Queue any not-yet-fetched images; actual fetching happens in the
         // event loop so the first frame renders immediately.
@@ -685,6 +739,7 @@ impl ViewerState {
         }
         self.wrapped = new_wrapped;
         self.offset = (old_offset as isize + offset_delta).max(0) as usize;
+        self.content_generation = self.content_generation.wrapping_add(1);
 
         // Build TOC with pre-computed section ranges and content
         // (must be after image placeholder adjustment so line indices are final)
@@ -2466,7 +2521,219 @@ fn copy_to_clipboard(text: &str) -> io::Result<()> {
 
 // ── Rendering ───────────────────────────────────────────────────────────────
 
+/// `true` when the user opted out of the scroll fast path via the
+/// `MDTERM_NO_SCROLL_OPT` environment variable. Checked once and cached.
+fn scroll_opt_disabled() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("MDTERM_NO_SCROLL_OPT").is_some())
+}
+
+/// Scroll fast path. When the new frame is exactly a vertical shift of the
+/// previous one — same geometry, theme, file, and content; no overlays, search,
+/// or images involved — we let the terminal do the scrolling itself via a
+/// scroll-region (`CSI t;br`) plus `ScrollUp`/`ScrollDown`, then repaint only
+/// the `|delta|` newly exposed rows (plus the moving scrollbar thumb and the
+/// status bar). Everything else on screen is reused as-is.
+///
+/// This mirrors how terminal scrollback stays smooth: instead of resending the
+/// whole viewport every keystroke, we shift the existing pixels and patch the
+/// edge. Returns `true` if the frame was fully handled here.
+fn try_render_scroll(stdout: &mut io::Stdout, state: &mut ViewerState) -> io::Result<bool> {
+    use std::io::Write;
+
+    if scroll_opt_disabled() {
+        return Ok(false);
+    }
+
+    let Some(last) = state.last_frame else {
+        return Ok(false);
+    };
+
+    // Only the plain interactive view is eligible: overlays, search
+    // highlighting, JSON cursor, slide mode and toasts all change more than the
+    // offset, so they need a full repaint.
+    if state.mode != ViewMode::Normal
+        || !state.search.query.is_empty()
+        || state.json_view.is_some()
+        || state.toast.is_some()
+        || state.slide_mode
+    {
+        return Ok(false);
+    }
+
+    let viewport = state.viewport();
+    if viewport == 0 {
+        return Ok(false);
+    }
+
+    // Geometry, theme, file and content must be identical to last frame —
+    // otherwise the on-screen rows don't line up with a simple shift.
+    let theme_is_dark = state.theme.name() == "dark";
+    if state.cols != last.cols
+        || state.rows != last.rows
+        || state.h_offset != last.h_offset
+        || state.current_file_idx != last.current_file_idx
+        || theme_is_dark != last.theme_is_dark
+        || state.content_generation != last.content_generation
+        || viewport != last.viewport
+    {
+        return Ok(false);
+    }
+
+    let delta = state.offset as isize - last.offset as isize;
+    if delta == 0 || delta.abs() >= viewport as isize {
+        // No scroll, or a jump bigger than a screenful (e.g. PageDown/G) — a
+        // full repaint is cheaper/correct.
+        return Ok(false);
+    }
+
+    // Any image in the union of the old and new viewports disqualifies the fast
+    // path: Kitty/iTerm2 placements live in their own layer and don't move with
+    // a scroll region, so scrolling over them corrupts the display.
+    let lo = state.offset.min(last.offset);
+    let hi = state.offset.max(last.offset).saturating_add(viewport);
+    if state.has_image_in_range(lo, hi) {
+        return Ok(false);
+    }
+
+    // ── Eligible: perform the terminal-level scroll ──────────────────────
+    let width = state.cols as usize;
+    let content_width = width.saturating_sub(4);
+    let border_x = content_width + 2; // x of the " │"/" ┃" right border
+    let theme = &state.theme;
+    let new_offset = state.offset;
+
+    queue!(stdout, BeginSynchronizedUpdate)?;
+
+    // Set scroll region to the content rows (y = 1..=viewport, 1-indexed
+    // 2..=viewport+1), then scroll. DECSTBM also homes the cursor.
+    let bottom = viewport as u16 + 1;
+    write!(stdout, "\x1b[2;{bottom}r")?;
+    if delta > 0 {
+        queue!(stdout, ScrollUp(delta as u16))?;
+    } else {
+        queue!(stdout, ScrollDown((-delta) as u16))?;
+    }
+    // Reset scroll region to the full screen before painting outside it.
+    write!(stdout, "\x1b[r")?;
+
+    // Determine which content rows are freshly exposed and need repainting.
+    let exposed_rows: Vec<usize> = if delta > 0 {
+        // content shifted up: bottom `delta` rows are new
+        ((viewport - delta as usize)..viewport).collect()
+    } else {
+        // content shifted down: top `|delta|` rows are new
+        (0..(-delta) as usize).collect()
+    };
+
+    // Paint the newly exposed rows (full gutter + content + background fill).
+    for &row in &exposed_rows {
+        queue!(stdout, MoveTo(0, (row as u16) + 1))?;
+        queue!(
+            stdout,
+            SetBackgroundColor(theme.bg),
+            SetForegroundColor(theme.border),
+            Print("│ "),
+            SetAttribute(Attribute::Reset),
+            SetBackgroundColor(theme.bg),
+        )?;
+
+        let line_idx = new_offset + row;
+        if let Some(line) = state.wrapped.get(line_idx) {
+            let visible = clip_spans(&line.spans, state.h_offset, content_width);
+            let mut col = 0usize;
+            for span in &visible {
+                write_span(stdout, span, Some(theme.bg))?;
+                col += UnicodeWidthStr::width(span.text.as_str());
+            }
+            if col < content_width {
+                // Uniform-background fill (e.g. code blocks) so the padding
+                // matches the row's background, matching the full renderer.
+                let fill_bg = line
+                    .spans
+                    .first()
+                    .and_then(|s| s.style.bg)
+                    .filter(|&bg| line.spans.iter().all(|s| s.style.bg == Some(bg)));
+                match fill_bg {
+                    Some(bg) => {
+                        queue!(
+                            stdout,
+                            SetBackgroundColor(bg),
+                            Print(" ".repeat(content_width - col)),
+                            SetAttribute(Attribute::Reset),
+                            SetBackgroundColor(theme.bg),
+                        )?;
+                    }
+                    None => {
+                        queue!(stdout, Print(" ".repeat(content_width - col)))?;
+                    }
+                }
+            }
+        } else {
+            queue!(stdout, Print(" ".repeat(content_width)))?;
+        }
+    }
+
+    // The scroll shifted every row's right border, so re-draw the scrollbar /
+    // right border for all viewport rows with the (moved) thumb position.
+    let total = state.wrapped.len();
+    let has_scrollbar = total > viewport;
+    let (thumb_start, thumb_end) = if has_scrollbar {
+        let thumb_size = (viewport * viewport / total).max(1).min(viewport);
+        let max_off = total.saturating_sub(viewport);
+        let track_range = viewport.saturating_sub(thumb_size);
+        let pos = if max_off > 0 && track_range > 0 {
+            new_offset * track_range / max_off
+        } else {
+            0
+        };
+        (pos, (pos + thumb_size).min(viewport))
+    } else {
+        (0, 0)
+    };
+    for row in 0..viewport {
+        queue!(stdout, MoveTo(border_x as u16, (row as u16) + 1))?;
+        if has_scrollbar && row >= thumb_start && row < thumb_end {
+            queue!(
+                stdout,
+                SetForegroundColor(theme.scrollbar_thumb),
+                Print(" ┃"),
+                SetAttribute(Attribute::Reset),
+            )?;
+        } else {
+            let bar_color = if has_scrollbar {
+                theme.scrollbar_track
+            } else {
+                theme.border
+            };
+            queue!(
+                stdout,
+                SetForegroundColor(bar_color),
+                Print(" │"),
+                SetAttribute(Attribute::Reset),
+            )?;
+        }
+    }
+
+    // The status bar shows position info that changed with the scroll.
+    render_status_bar(stdout, state)?;
+
+    queue!(stdout, EndSynchronizedUpdate)?;
+    stdout.flush()?;
+    Ok(true)
+}
+
 fn render_frame(stdout: &mut io::Stdout, state: &mut ViewerState) -> io::Result<()> {
+    // Fast path: if this frame is just a vertical scroll of the previous one
+    // (and no images/overlays/search are involved), reuse the terminal's own
+    // scroll and only repaint the newly exposed rows. This makes line-by-line
+    // scrolling as smooth as native terminal scrollback instead of repainting
+    // the whole viewport every keystroke.
+    if try_render_scroll(stdout, state)? {
+        state.last_frame = Some(state.snapshot_frame());
+        return Ok(());
+    }
+
     let width = state.cols as usize;
     let viewport = state.viewport();
     let content_width = width.saturating_sub(4);
@@ -2832,7 +3099,9 @@ fn render_frame(stdout: &mut io::Stdout, state: &mut ViewerState) -> io::Result<
     }
 
     queue!(stdout, EndSynchronizedUpdate)?;
-    stdout.flush()
+    stdout.flush()?;
+    state.last_frame = Some(state.snapshot_frame());
+    Ok(())
 }
 
 fn render_status_bar(stdout: &mut io::Stdout, state: &ViewerState) -> io::Result<()> {
