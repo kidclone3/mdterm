@@ -153,7 +153,7 @@ fn main() {
                 }
             }
         } else {
-            markdown::render(&content, w, &initial_theme, line_numbers)
+            markdown::render(&content, w, &initial_theme, line_numbers, false)
         };
         let wrapped = style::wrap_lines(&lines, w);
         if cli.no_color {

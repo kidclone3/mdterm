@@ -31,7 +31,7 @@ Ten source files in `src/`:
 - **export.rs** — HTML export with inline CSS matching the current theme.
 - **image.rs** — Terminal image rendering with three protocols: Kitty (ID-based upload/placement), iTerm2 (inline image sequences), and Unicode half-block fallback. Fetches images on background threads via `std::sync::mpsc` (non-blocking — `start_fetch()` spawns a thread per URL, `poll_completed()` drains results each event-loop tick). Also handles downscaling, caching, and terminal cell metric detection.
 - **json.rs** — JSON file viewer. Parses JSON and renders it with semantic coloring (keys, strings, numbers, booleans, nulls) and indented structure.
-- **diagram.rs** — Mermaid flowchart parser and ASCII art renderer. Supports node shapes (rect, rounded, diamond, circle), edge labels, topological layering, and barycenter layout optimization.
+- **diagram.rs** — Mermaid rendering. Provides `mermaid_image_url()` which builds a `mermaid.ink` image URL (URL-safe base64 of the source + theme) for *every* mermaid diagram type, rendered via the existing terminal image pipeline. Also retains a native ASCII flowchart/sequence parser and canvas renderer (node shapes, edges, topological layering, barycenter layout) used as a fallback for piped/offline output.
 
 **Data flow:** markdown text → `pulldown-cmark` events → `Renderer` (markdown.rs) → `(Vec<Line>, DocumentInfo)` → `wrap_lines` (style.rs) → terminal/HTML output
 

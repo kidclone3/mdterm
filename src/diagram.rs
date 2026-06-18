@@ -1,5 +1,6 @@
 use crate::style::{Style, StyledSpan};
 use crate::theme::Theme;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use crossterm::style::Color;
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -2235,6 +2236,27 @@ pub fn render_mermaid(code: &str, theme: &Theme) -> Option<(Vec<Vec<StyledSpan>>
     }
 }
 
+/// Build a mermaid.ink image URL for the given mermaid source.
+///
+/// The source is URL-safe base64-encoded (no padding) and appended to the
+/// `https://mermaid.ink/img/` endpoint, which renders it server-side via the
+/// real mermaid.js and returns a PNG. This covers every mermaid diagram type
+/// (flowchart, sequence, class, state, gantt, pie, er, …) — not just the subset
+/// handled by the native ASCII renderer.
+///
+/// `type=png` selects a transparent-background PNG so the image blends with the
+/// terminal background, and `theme` mirrors mdterm's current theme so node/text
+/// colors stay legible on dark or light backgrounds.
+pub fn mermaid_image_url(code: &str, theme: &Theme) -> String {
+    let encoded = URL_SAFE_NO_PAD.encode(code.as_bytes());
+    let mermaid_theme = if theme.name() == "dark" {
+        "dark"
+    } else {
+        "default"
+    };
+    format!("https://mermaid.ink/img/{encoded}?type=png&theme={mermaid_theme}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2466,5 +2488,33 @@ mod tests {
             '┼'
         );
         assert_eq!(junction_char(CONN_DOWN | CONN_LEFT | CONN_RIGHT), '┬');
+    }
+
+    #[test]
+    fn mermaid_image_url_encodes_source_and_dark_theme() {
+        let url = mermaid_image_url("graph TD\nA-->B", &Theme::dark());
+        // URL-safe base64 of "graph TD\nA-->B" has no padding/+/ .
+        assert!(url.starts_with("https://mermaid.ink/img/"), "{url}");
+        assert!(url.contains("?type=png"), "{url}");
+        assert!(url.contains("theme=dark"), "{url}");
+        // No standard base64 characters that would break a URL path.
+        let path = url
+            .split("/img/")
+            .nth(1)
+            .unwrap()
+            .split('?')
+            .next()
+            .unwrap();
+        assert!(
+            !path.contains(['+', '/', '=']),
+            "expected URL-safe base64, got {path}"
+        );
+    }
+
+    #[test]
+    fn mermaid_image_url_uses_default_theme_for_light() {
+        let url = mermaid_image_url("sequenceDiagram\nA->>B: Hi", &Theme::light());
+        assert!(url.contains("theme=default"), "{url}");
+        assert!(url.contains("?type=png"), "{url}");
     }
 }

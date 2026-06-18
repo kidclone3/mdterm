@@ -62,6 +62,11 @@ struct Renderer<'a> {
     image_url: String,
     image_alt: String,
 
+    // When true, mermaid fenced blocks are emitted as mermaid.ink image
+    // placeholders (rendered via the terminal image pipeline). When false,
+    // they fall back to the native ASCII diagram renderer / raw source.
+    mermaid_images: bool,
+
     // Document info
     code_blocks: Vec<CodeBlockContent>,
 
@@ -82,6 +87,7 @@ impl<'a> Renderer<'a> {
         width: usize,
         theme: &'a Theme,
         line_numbers: bool,
+        mermaid_images: bool,
         syntax_set: &'a SyntaxSet,
         theme_set: &'a ThemeSet,
     ) -> Self {
@@ -119,6 +125,7 @@ impl<'a> Renderer<'a> {
             in_image: false,
             image_url: String::new(),
             image_alt: String::new(),
+            mermaid_images,
             code_blocks: Vec::new(),
             syntax_set,
             theme_set,
@@ -242,6 +249,18 @@ impl<'a> Renderer<'a> {
 
         // Check for special diagram blocks
         let is_diagram = matches!(lang.as_str(), "mermaid" | "plantuml" | "dot" | "graphviz");
+
+        // Render mermaid diagrams as a real image via a remote renderer
+        // (mermaid.ink) when image output is requested. This covers every
+        // mermaid diagram type — flowcharts, sequence, class, state, gantt,
+        // pie, er, etc. — and is displayed through mdterm's existing terminal
+        // image pipeline (Kitty / iTerm2 / Sixel / HalfBlock).
+        if lang == "mermaid" && self.mermaid_images {
+            let url = diagram::mermaid_image_url(&code, self.theme);
+            self.flush_line();
+            self.emit_image_block(&url, "mermaid diagram");
+            return;
+        }
 
         // Try to render mermaid diagrams visually
         if lang == "mermaid"
@@ -522,6 +541,46 @@ impl<'a> Renderer<'a> {
             }],
             meta: LineMeta::DiagramContent { block_id },
         });
+    }
+
+    /// Emit an image block: `IMAGE_ROWS` placeholder lines carrying
+    /// `LineMeta::Image` (fetched + rendered asynchronously by the viewer via
+    /// the terminal image pipeline) followed by a dim italic caption.
+    ///
+    /// Used both for inline markdown images and for mermaid fenced blocks that
+    /// are delegated to a remote renderer (e.g. mermaid.ink).
+    fn emit_image_block(&mut self, url: &str, alt: &str) {
+        let total_rows = crate::image::IMAGE_ROWS;
+
+        // Push placeholder lines for the image
+        for row in 0..total_rows {
+            self.lines.push(Line {
+                spans: vec![],
+                meta: LineMeta::Image {
+                    url: url.to_string(),
+                    alt: alt.to_string(),
+                    row,
+                    total_rows,
+                },
+            });
+        }
+
+        // Caption line below the image
+        self.push_span(
+            &format!("  {}", alt),
+            Style {
+                fg: Some(self.theme.image_fg),
+                dim: true,
+                italic: true,
+                link_url: if url.is_empty() {
+                    None
+                } else {
+                    Some(url.to_string())
+                },
+                ..Default::default()
+            },
+        );
+        self.flush_line();
     }
 
     fn emit_table(&mut self) {
@@ -933,37 +992,7 @@ impl<'a> Renderer<'a> {
                 // Flush any pending content
                 self.flush_line();
 
-                let total_rows = crate::image::IMAGE_ROWS;
-
-                // Push placeholder lines for the image
-                for row in 0..total_rows {
-                    self.lines.push(Line {
-                        spans: vec![],
-                        meta: LineMeta::Image {
-                            url: url.clone(),
-                            alt: alt.clone(),
-                            row,
-                            total_rows,
-                        },
-                    });
-                }
-
-                // Caption line below the image
-                self.push_span(
-                    &format!("  {}", alt),
-                    Style {
-                        fg: Some(self.theme.image_fg),
-                        dim: true,
-                        italic: true,
-                        link_url: if url.is_empty() {
-                            None
-                        } else {
-                            Some(url.clone())
-                        },
-                        ..Default::default()
-                    },
-                );
-                self.flush_line();
+                self.emit_image_block(&url, &alt);
 
                 self.in_image = false;
             }
@@ -1553,9 +1582,10 @@ pub fn render(
     width: usize,
     theme: &Theme,
     line_numbers: bool,
+    mermaid_images: bool,
 ) -> (Vec<Line>, DocumentInfo) {
     let res = SyntectRes::load();
-    render_with(input, width, theme, line_numbers, &res)
+    render_with(input, width, theme, line_numbers, mermaid_images, &res)
 }
 
 pub fn render_with(
@@ -1563,6 +1593,7 @@ pub fn render_with(
     width: usize,
     theme: &Theme,
     line_numbers: bool,
+    mermaid_images: bool,
     syntect_res: &SyntectRes,
 ) -> (Vec<Line>, DocumentInfo) {
     let mut renderer = Renderer::new(
@@ -1570,6 +1601,7 @@ pub fn render_with(
         width,
         theme,
         line_numbers,
+        mermaid_images,
         &syntect_res.syntax_set,
         &syntect_res.theme_set,
     );
@@ -1603,7 +1635,7 @@ mod tests {
 
     fn render_test(input: &str) -> (Vec<Line>, DocumentInfo) {
         let theme = Theme::dark();
-        render(input, 80, &theme, false)
+        render(input, 80, &theme, false, false)
     }
 
     fn line_text(line: &Line) -> String {
@@ -1678,7 +1710,7 @@ mod tests {
         let theme = Theme::dark();
         let input =
             "```go\nfunc fibonacci(n int) int { return fibonacci(n-1) + fibonacci(n-2) }\n```";
-        let (lines, _) = render(input, 80, &theme, false);
+        let (lines, _) = render(input, 80, &theme, false, false);
         assert!(
             lines.iter().any(|line| line.display_width() > 20),
             "test fixture should produce a code block wider than the wrap width"
@@ -1707,7 +1739,7 @@ mod tests {
         let theme = Theme::dark();
         let input =
             "```mermaid\ngraph LR\nA[Very long start label] --> B[Very long finish label]\n```";
-        let (lines, _) = render(input, 80, &theme, false);
+        let (lines, _) = render(input, 80, &theme, false, false);
         assert!(
             lines.iter().any(|line| line.display_width() > 20),
             "test fixture should produce a diagram wider than the wrap width"
@@ -1818,8 +1850,8 @@ mod tests {
     fn line_numbers_enabled_adds_numbers_in_code_blocks() {
         let theme = Theme::dark();
         let input = "```\nfirst\nsecond\nthird\n```";
-        let (lines_with, _) = render(input, 80, &theme, true);
-        let (lines_without, _) = render(input, 80, &theme, false);
+        let (lines_with, _) = render(input, 80, &theme, true, false);
+        let (lines_without, _) = render(input, 80, &theme, false, false);
         // With line numbers, code block lines should contain "1", "2", "3"
         let code_text: String = lines_with
             .iter()

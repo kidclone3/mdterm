@@ -567,6 +567,7 @@ impl ViewerState {
                     cw,
                     &self.theme,
                     self.line_numbers,
+                    true,
                     &self.syntect_res,
                 )
             }
@@ -577,6 +578,7 @@ impl ViewerState {
                 cw,
                 &self.theme,
                 self.line_numbers,
+                true,
                 &self.syntect_res,
             )
         };
@@ -2616,8 +2618,12 @@ fn render_frame(stdout: &mut io::Stdout, state: &mut ViewerState) -> io::Result<
                     } else {
                         alt.as_str()
                     };
-                    let prefix = "[ Loading: ";
-                    let suffix = " ]";
+                    let failed = state.image_cache.is_failed(url);
+                    let (prefix, suffix) = if failed {
+                        ("[ Failed to load: ", " ]")
+                    } else {
+                        ("[ Loading: ", " ]")
+                    };
                     let max_inner = content_width.saturating_sub(prefix.len() + suffix.len());
                     let truncated: String = label_text.chars().take(max_inner).collect();
                     let label = format!("{prefix}{truncated}{suffix}");
@@ -2625,7 +2631,11 @@ fn render_frame(stdout: &mut io::Stdout, state: &mut ViewerState) -> io::Result<
                     let pad = content_width.saturating_sub(label_len) / 2;
                     queue!(
                         stdout,
-                        SetForegroundColor(theme.image_fg),
+                        SetForegroundColor(if failed {
+                            theme.search_no_match
+                        } else {
+                            theme.image_fg
+                        }),
                         SetAttribute(Attribute::Dim),
                         Print(" ".repeat(pad)),
                         Print(&label),

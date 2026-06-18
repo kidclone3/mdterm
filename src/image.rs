@@ -957,6 +957,13 @@ impl ImageCache {
         self.images.get(url).is_some_and(|o| o.is_some())
     }
 
+    /// Returns true if a fetch completed but failed (or returned no decodable
+    /// image). Distinct from "still loading": once a result arrives it is
+    /// stored in `images` (as `None` on failure) and removed from `in_flight`.
+    pub fn is_failed(&self, url: &str) -> bool {
+        !self.in_flight.contains(url) && self.images.get(url).is_some_and(|o| o.is_none())
+    }
+
     /// Returns true if a fetch has already been attempted for this URL
     /// (regardless of whether it succeeded) or is currently in flight,
     /// so we don't re-queue it.
