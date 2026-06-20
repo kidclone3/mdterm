@@ -1,41 +1,31 @@
-//! One-off tool: convert NLTK's `weights.json` into `pos_model/weights.bincode`.
+//! One-off tool: gzip NLTK's `weights.json` into `pos_model/weights.json.gz`.
 //!
 //! Usage:
-//!     cargo run --example convert_pos_model -- pos_model/weights.json pos_model/weights.bincode
+//!     cargo run --example convert_pos_model --features pos -- pos_model/weights.json pos_model/weights.json.gz
 //!
-//! Run this only when updating the vendored model. The output bincode is what
-//! `src/pos.rs` embeds at compile time via `include_bytes!`.
+//! Run only when updating the vendored model. `src/pos.rs` embeds the output
+//! via `include_bytes!` and gunzips it at load time. Downcasting/conversion is
+//! NOT done here — we keep the original f64 JSON and let serde parse f64→f32
+//! at load. Compression is what shrinks the ~5.7 MB JSON to ~1.5 MB.
 
-use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::process;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() != 3 {
-        eprintln!("usage: convert_pos_model <weights.json> <weights.bincode>");
+        eprintln!("usage: convert_pos_model <weights.json> <weights.json.gz>");
         process::exit(2);
     }
     let src = &args[1];
     let dst = &args[2];
 
-    let text = fs::read_to_string(src).expect("read weights.json");
-    let parsed: HashMap<String, HashMap<String, f64>> =
-        serde_json::from_str(&text).expect("parse weights.json");
-
-    // Downcast f64 -> f32 to halve size; the perceptron tolerates the precision loss.
-    let weights: HashMap<String, HashMap<String, f32>> = parsed
-        .into_iter()
-        .map(|(feat, inner)| {
-            (
-                feat,
-                inner.into_iter().map(|(tag, w)| (tag, w as f32)).collect(),
-            )
-        })
-        .collect();
-
-    let bytes = bincode::serialize(&weights).expect("serialize bincode");
-    fs::write(dst, &bytes).expect("write weights.bincode");
-    eprintln!("wrote {} ({} bytes) from {}", dst, bytes.len(), src);
+    let bytes = fs::read(src).expect("read weights.json");
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(&bytes).expect("gzip");
+    let gz = encoder.finish().expect("finish gz");
+    fs::write(dst, &gz).expect("write weights.json.gz");
+    eprintln!("wrote {} ({} bytes, source {} bytes) from {}", dst, gz.len(), bytes.len(), src);
 }

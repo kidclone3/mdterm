@@ -619,10 +619,10 @@ name = "mdterm"
 version = "2.0.0"
 dependencies = [
  "base64",
- "bincode",
  "clap",
  "crossterm",
  "dirs",
+ "flate2",
  "image",
  "libc",
  "notify",
