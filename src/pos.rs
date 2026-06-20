@@ -324,9 +324,103 @@ impl PosTagger {
     }
 }
 
+use crate::style::StyledSpan;
+
+/// A word token located within a specific span of a line.
+#[derive(Clone, Debug)]
+pub struct Token {
+    /// Index into the line's `spans` vector.
+    pub span_idx: usize,
+    /// Byte offset where the token starts within `spans[span_idx].text`.
+    pub byte_start: usize,
+    /// Byte length of the token text.
+    pub byte_len: usize,
+    /// The token text itself (no surrounding whitespace).
+    pub text: String,
+}
+
+/// Split a line's spans into non-whitespace word tokens, recording each
+/// token's originating span and byte offset. Tokenization matches the
+/// perceptron's `split_whitespace` expectation; punctuation stays attached
+/// to the adjacent word.
+pub fn tokenize_spans(spans: &[StyledSpan]) -> Vec<Token> {
+    let mut out = Vec::new();
+    for (idx, span) in spans.iter().enumerate() {
+        let bytes = span.text.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            // skip whitespace
+            while i < bytes.len() && (bytes[i] as char).is_whitespace() {
+                i += 1;
+            }
+            if i >= bytes.len() {
+                break;
+            }
+            let start = i;
+            while i < bytes.len() && !(bytes[i] as char).is_whitespace() {
+                i += 1;
+            }
+            let end = i;
+            out.push(Token {
+                span_idx: idx,
+                byte_start: start,
+                byte_len: end - start,
+                text: span.text[start..end].to_string(),
+            });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::style::{Style, StyledSpan};
+
+    fn span(text: &str) -> StyledSpan {
+        StyledSpan {
+            text: text.to_string(),
+            style: Style::default(),
+        }
+    }
+
+    #[test]
+    fn tokenize_single_span_offsets() {
+        let toks = tokenize_spans(&[span("the quick fox")]);
+        assert_eq!(toks.len(), 3);
+        assert_eq!(toks[0].text, "the");
+        assert_eq!(
+            &"the quick fox"[toks[0].byte_start..toks[0].byte_start + toks[0].byte_len],
+            "the"
+        );
+        assert_eq!(toks[2].text, "fox");
+        assert_eq!(
+            &"the quick fox"[toks[2].byte_start..toks[2].byte_start + toks[2].byte_len],
+            "fox"
+        );
+    }
+
+    #[test]
+    fn tokenize_across_spans_uses_correct_span_idx() {
+        // span0: "hello " span1: "world!"
+        let toks = tokenize_spans(&[span("hello "), span("world!")]);
+        assert_eq!(toks.len(), 2);
+        assert_eq!(toks[0].span_idx, 0);
+        assert_eq!(toks[0].text, "hello");
+        assert_eq!(toks[1].span_idx, 1);
+        assert_eq!(toks[1].text, "world!");
+        // byte offsets are relative to each token's own span
+        assert_eq!(
+            &"world!"[toks[1].byte_start..toks[1].byte_start + toks[1].byte_len],
+            "world!"
+        );
+    }
+
+    #[test]
+    fn tokenize_skips_pure_whitespace_runs() {
+        let toks = tokenize_spans(&[span("   ")]);
+        assert!(toks.is_empty());
+    }
 
     #[test]
     fn noun_tags_map_to_noun() {
