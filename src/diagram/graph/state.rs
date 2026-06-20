@@ -503,6 +503,34 @@ fn note_padding(notes: &[StateNote]) -> (usize, usize, usize) {
     (left, right, over_final)
 }
 
+/// Longest `chars().count()` among edge labels whose `from` node sits in
+/// `layers[layer_idx]` and whose `to` node sits in the next layer
+/// (`layers[layer_idx + 1]`). Used to reserve horizontal room so down-edge
+/// labels drawn rightward from the arrow never reach a same-layer
+/// neighbour's box.
+fn layer_down_edge_label_max(
+    diagram: &StateDiagram,
+    layers: &[Vec<String>],
+    layer_idx: usize,
+) -> usize {
+    let next = match layers.get(layer_idx + 1) {
+        Some(n) => n,
+        None => return 0,
+    };
+    let mut m = 0usize;
+    for id in &layers[layer_idx] {
+        for e in &diagram.edges {
+            if &e.from == id
+                && next.iter().any(|n| n == &e.to)
+                && let Some(lbl) = &e.label
+            {
+                m = m.max(lbl.chars().count());
+            }
+        }
+    }
+    m
+}
+
 #[allow(clippy::too_many_lines)]
 fn render_state_canvas(diagram: &StateDiagram, theme: &Theme) -> Option<(Canvas, usize)> {
     let graph = to_graph(diagram);
@@ -531,12 +559,20 @@ fn render_state_canvas(diagram: &StateDiagram, theme: &Theme) -> Option<(Canvas,
         heights.insert(id.clone(), 3);
     }
 
-    let h_gap = 4;
+    let h_gap_floor = 4;
     let edge_gap = 4;
     let base_height = 3;
 
+    let layer_h_gaps: Vec<usize> = (0..layers.len())
+        .map(|i| {
+            layer_down_edge_label_max(diagram, &layers, i)
+                .saturating_add(2)
+                .max(h_gap_floor)
+        })
+        .collect();
     let mut max_layer_width = 0;
-    for layer in &layers {
+    for (idx, layer) in layers.iter().enumerate() {
+        let h_gap = layer_h_gaps[idx];
         let w: usize = layer
             .iter()
             .map(|id| widths.get(id).copied().unwrap_or(7))
@@ -583,6 +619,7 @@ fn render_state_canvas(diagram: &StateDiagram, theme: &Theme) -> Option<(Canvas,
     let mut y = top_padding;
     for (layer_idx, layer) in layers.iter().enumerate() {
         let layer_height = layer_heights[layer_idx];
+        let h_gap = layer_h_gaps[layer_idx];
 
         let node_widths: Vec<usize> = layer
             .iter()
@@ -959,5 +996,22 @@ mod tests {
             all.contains("Active"),
             "known state label should appear, got:\n{all}"
         );
+    }
+
+    #[test]
+    fn renders_long_edge_label_unclipped() {
+        // Two same-layer sources (A, X) whose down-edges carry long labels.
+        // A --> B : a_very_long_event must render as a contiguous substring;
+        // X must be pushed right enough that the label doesn't bisect X's box.
+        let rows = render_to_text(
+            "stateDiagram-v2\n[*] --> A\n[*] --> X\nA --> B : a_very_long_event\nX --> Y\nB --> [*]\nY --> [*]",
+        );
+        let all: String = rows.join("\n");
+        assert!(
+            all.contains("a_very_long_event"),
+            "long edge label must render unsplit, got:\n{all}"
+        );
+        assert!(all.contains('B'), "target state B missing, got:\n{all}");
+        assert!(all.contains('X'), "sibling state X missing, got:\n{all}");
     }
 }
