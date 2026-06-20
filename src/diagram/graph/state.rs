@@ -1120,4 +1120,73 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn demo_renders_cleanly() {
+        // The exact mermaid block from demo/state-diagram.md.
+        let src = "stateDiagram-v2
+    [*] --> Created : new order
+    Created --> Paid : payment_ok
+    Created --> Cancelled : user_cancel
+
+    Paid --> Packed : warehouse_pick
+    Packed --> Shipped : label_printed
+    Shipped --> Delivered : carrier_dropoff
+
+    Delivered --> Closed : confirm
+    Closed --> [*]
+    Cancelled --> [*]
+
+    note right of Paid
+        Funds captured
+        by the gateway
+    end note
+
+    state Cancelled {
+        [*] --> Refunded
+        Refunded --> [*]
+    }";
+        let rows = render_to_text(src);
+        let all: String = rows.join("\n");
+
+        // (a) All eight state names appear.
+        for state in [
+            "Created",
+            "Paid",
+            "Packed",
+            "Shipped",
+            "Delivered",
+            "Closed",
+            "Cancelled",
+            "Refunded",
+        ] {
+            assert!(all.contains(state), "state `{state}` missing, got:\n{all}");
+        }
+        // (b) Note text renders beside Paid.
+        assert!(
+            all.contains("Funds captured"),
+            "note line `Funds captured` missing, got:\n{all}"
+        );
+        assert!(
+            all.contains("by the gateway"),
+            "note line `by the gateway` missing, got:\n{all}"
+        );
+        // (c) `end` does not appear as a standalone token.
+        assert!(
+            !all.split_whitespace().any(|t| t == "end"),
+            "`end` keyword leaked into render, got:\n{all}"
+        );
+        // (d) Every emitted row's length fits within the reported canvas
+        // width (catches out-of-bounds writes that the bounds-checked
+        // setters would otherwise silently drop).
+        let theme = Theme::dark();
+        let (span_rows, width) = render_mermaid(src, &theme).expect("rendered");
+        for (i, row) in span_rows.iter().enumerate() {
+            let row_len: usize = row.iter().map(|s| s.text.chars().count()).sum();
+            assert!(
+                row_len <= width,
+                "row {i} length {row_len} exceeds canvas width {width}"
+            );
+        }
+    }
 }
