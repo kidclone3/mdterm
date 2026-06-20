@@ -107,13 +107,18 @@ No change to `graph/mod.rs` layer assignment or ordering.
 `layers[i]` and whose `to` node is in `layers[i+1]`; set
 `layer_gaps[i] = max(4, longest_label_chars + 2)`. Use it in
 `total_height = sum(layer_heights) + sum(layer_gaps)` and in the per-layer
-`y += layer_height + layer_gaps[i]` advancement. Result: every down-edge
-label has its own row inside the span, so `draw_edge_td`'s rightward write at
-`canvas.rs:656` cannot reach the destination box.
+`y += layer_height + layer_gaps[i]` advancement. Role: keeps the inter-layer
+gap self-describing (the gap reflects the labels that cross it) and
+future-proofs against multi-row label wrapping or `far_label` placement on
+TD edges. Pieces B and C are the primary fix for the demo's bug-3
+manifestation; A is the symmetric invariant that prevents the same class of
+overflow from reappearing vertically.
 
 **Piece B — per-layer horizontal gap.** Replace `h_gap = 4` (`state.rs:486`,
 `:491`, `:541`) with `h_gap_for(layer)`. For each layer, take the longest
-label among edges whose `from` node sits in that layer; set
+label among edges whose `from` node sits in that layer **and** whose `to`
+node sits in the next layer (i.e. the down-edges whose rightward label draw
+could collide with a same-layer neighbour); set
 `h_gap = max(4, longest_label_chars + 2)`. Use the per-layer value in the
 `layer_width` sum (line 491–498) and in the `centers` computation (line
 541–550). Same-layer neighbours (e.g. `Paid` and the `Cancelled` composite)
