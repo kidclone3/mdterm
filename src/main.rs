@@ -4,6 +4,8 @@ mod export;
 mod image;
 mod json;
 mod markdown;
+#[cfg(feature = "pos")]
+mod pos;
 mod style;
 mod theme;
 mod viewer;
