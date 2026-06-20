@@ -1622,10 +1622,31 @@ pub fn render_with(
 
     let doc_info = DocumentInfo {
         code_blocks: renderer.code_blocks,
-        frontmatter_lines: None,
+        frontmatter_lines: frontmatter_line_count(input),
     };
 
     (renderer.lines, doc_info)
+}
+
+/// Detect a leading YAML frontmatter block (`---\n ... \n---\n`) and return
+/// the number of source lines it covers (inclusive of both fences).
+fn frontmatter_line_count(input: &str) -> Option<usize> {
+    let bytes = input.as_bytes();
+    if !bytes.starts_with(b"---\n") && !bytes.starts_with(b"---\r\n") {
+        return None;
+    }
+    // Search for a closing fence line that is exactly `---` (after the first fence).
+    let mut line_no = 0usize;
+    for line in input.lines() {
+        line_no += 1;
+        if line_no == 1 {
+            continue; // opening fence
+        }
+        if line.trim_end() == "---" {
+            return Some(line_no);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1877,5 +1898,29 @@ mod tests {
             spans_with > spans_without,
             "line numbers should add extra spans"
         );
+    }
+
+    // ── Frontmatter detection ──────────────────────────────────────────────
+
+    #[test]
+    fn frontmatter_detected_for_leading_yaml_block() {
+        let md = "---\ntitle: Hello\nauthor: Me\n---\n\n# Heading\n\nText.\n";
+        let (_, info) = render_test(md);
+        assert_eq!(info.frontmatter_lines, Some(4)); // 4 source lines: ---,title,author,---
+    }
+
+    #[test]
+    fn no_frontmatter_for_plain_doc() {
+        let md = "# Heading\n\nText.\n";
+        let (_, info) = render_test(md);
+        assert_eq!(info.frontmatter_lines, None);
+    }
+
+    #[test]
+    fn no_frontmatter_when_fence_not_at_start() {
+        let md = "# H\n\n---\n\ntext\n";
+        let (_, info) = render_test(md);
+        // thematic break mid-doc is not frontmatter
+        assert_eq!(info.frontmatter_lines, None);
     }
 }
