@@ -1492,10 +1492,12 @@ fn lr_edge_port_y(top_y: usize, height: usize, port_idx: usize, port_count: usiz
     top_y + 1 + slot
 }
 
+type EdgePortMap = Vec<(usize, usize)>;
+
 fn lr_edge_port_maps(
     graph: &Graph,
     positions: &HashMap<String, NodeLayout>,
-) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+) -> (EdgePortMap, EdgePortMap) {
     let mut outgoing_ports = vec![(0, 1); graph.edges.len()];
     let mut incoming_ports = vec![(0, 1); graph.edges.len()];
 

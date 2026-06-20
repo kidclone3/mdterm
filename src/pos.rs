@@ -4,8 +4,9 @@
 //! word-spans by their part of speech using a vendored averaged-perceptron
 //! tagger (ported from `postagger`) and NLTK's pretrained model.
 
-// Public surface is forward-looking: each item is consumed by a later task
-// (apply pass, config/CLI category parsing). Silence dead_code until wired up.
+// `apply()` is the public entry point consumed by Tasks 13/14 (render pipeline).
+// Until those land, the binary crate's dead-code analysis flags the whole module
+// surface (apply itself, PosTagger, tokenize_spans, etc.). Silence until wired up.
 #![allow(dead_code)]
 
 /// The 9 part-of-speech color categories mdterm distinguishes.
@@ -372,16 +373,300 @@ pub fn tokenize_spans(spans: &[StyledSpan]) -> Vec<Token> {
     out
 }
 
+use crate::style::{Line, LineMeta};
+use crate::theme::Theme;
+
+fn category_color(theme: &Theme, cat: PosCategory) -> crossterm::style::Color {
+    match cat {
+        PosCategory::Noun => theme.pos_noun,
+        PosCategory::Verb => theme.pos_verb,
+        PosCategory::Adjective => theme.pos_adjective,
+        PosCategory::Adverb => theme.pos_adverb,
+        PosCategory::Preposition => theme.pos_preposition,
+        PosCategory::Conjunction => theme.pos_conjunction,
+        PosCategory::Determiner => theme.pos_determiner,
+        PosCategory::Pronoun => theme.pos_pronoun,
+        PosCategory::Value => theme.pos_value,
+    }
+}
+
+/// Color prose word-spans by part of speech.
+///
+/// - Skips the first `frontmatter_lines` line indices.
+/// - Skips lines whose `meta` is `CodeContent` or `DiagramContent`.
+/// - Skips spans marked `style.code` (inline code) or `style.link_url` (links).
+/// - Preserves all existing style attributes; only sets `fg`.
+/// - Only colors words whose category is in `categories`.
+#[allow(clippy::ptr_arg)]
+pub fn apply(
+    lines: &mut Vec<Line>,
+    theme: &Theme,
+    tagger: &PosTagger,
+    categories: PosCategorySet,
+    frontmatter_lines: Option<usize>,
+) {
+    let skip = frontmatter_lines.unwrap_or(0);
+    for (line_idx, line) in lines.iter_mut().enumerate() {
+        if line_idx < skip {
+            continue;
+        }
+        if matches!(
+            line.meta,
+            LineMeta::CodeContent { .. } | LineMeta::DiagramContent { .. }
+        ) {
+            continue;
+        }
+        // Tokenize, but only non-exempt spans contribute to the sentence.
+        let tokens = tokenize_spans(&line.spans);
+        if tokens.is_empty() {
+            continue;
+        }
+        // Precompute which spans are exempt (inline code / link) so we both
+        // exclude them from the tagging sentence and skip coloring them.
+        // Ownership held here so later mutable assignment to `line.spans` is
+        // not blocked by an outstanding borrow from the closure.
+        let exempt_spans: Vec<bool> = line
+            .spans
+            .iter()
+            .map(|s| s.style.code || s.style.link_url.is_some())
+            .collect();
+        let is_exempt = |span_idx: usize| exempt_spans[span_idx];
+        // Build the sentence from tokens whose originating span is not exempt.
+        let sentence: String = tokens
+            .iter()
+            .filter(|t| !is_exempt(t.span_idx))
+            .map(|t| t.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if sentence.is_empty() {
+            continue;
+        }
+        let tagged = tagger.tag(&sentence);
+
+        // Walk tokens in order, assigning each a tag from `tagged` in sequence.
+        // Tokens from exempt spans don't consume a tag (they weren't in the sentence).
+        let mut tag_iter = tagged.into_iter();
+        // Collect recolored spans per span index, then splice back in.
+        // Strategy: rebuild each span's contribution by splitting on its tokens.
+        let mut new_spans: Vec<StyledSpan> = Vec::with_capacity(line.spans.len());
+        // Tokens are in order; iterate spans and consume their tokens via cursor.
+        let mut tok_cursor = 0;
+        let tokens_len = tokens.len();
+        for (span_idx, span) in line.spans.iter().enumerate() {
+            // Gather tokens belonging to this span.
+            let mut start = 0usize;
+            let text_len = span.text.len();
+            let mut pieces: Vec<StyledSpan> = Vec::new();
+            while tok_cursor < tokens_len && tokens[tok_cursor].span_idx == span_idx {
+                let tok = &tokens[tok_cursor];
+                // whitespace before the token
+                if tok.byte_start > start {
+                    pieces.push(StyledSpan {
+                        text: span.text[start..tok.byte_start].to_string(),
+                        style: span.style.clone(),
+                    });
+                }
+                let tok_text = span.text[tok.byte_start..tok.byte_start + tok.byte_len].to_string();
+                let exempt = is_exempt(span_idx);
+                let fg = if exempt {
+                    span.style.fg
+                } else {
+                    // consume a tag
+                    match tag_iter.next() {
+                        Some(t) => match pt_tag_to_category(&t.tag) {
+                            Some(cat) if categories.contains(cat) => {
+                                Some(category_color(theme, cat))
+                            }
+                            _ => span.style.fg,
+                        },
+                        None => span.style.fg,
+                    }
+                };
+                let mut style = span.style.clone();
+                style.fg = fg;
+                pieces.push(StyledSpan {
+                    text: tok_text,
+                    style,
+                });
+                start = tok.byte_start + tok.byte_len;
+                tok_cursor += 1;
+            }
+            // trailing whitespace/remainder
+            if start < text_len {
+                pieces.push(StyledSpan {
+                    text: span.text[start..].to_string(),
+                    style: span.style.clone(),
+                });
+            }
+            if pieces.is_empty() {
+                // span had no tokens (e.g., pure whitespace or empty) — keep as-is
+                new_spans.push(span.clone());
+            } else {
+                new_spans.extend(pieces);
+            }
+        }
+        line.spans = new_spans;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::style::{Style, StyledSpan};
+    use crate::style::{Line, LineMeta, Style, StyledSpan};
+    use crate::theme::Theme;
 
     fn span(text: &str) -> StyledSpan {
         StyledSpan {
             text: text.to_string(),
             style: Style::default(),
         }
+    }
+
+    fn plain_line(text: &str) -> Line {
+        Line {
+            spans: vec![StyledSpan {
+                text: text.to_string(),
+                style: Style::default(),
+            }],
+            meta: LineMeta::None,
+        }
+    }
+
+    fn fg_of_first_word(line: &Line) -> Option<crossterm::style::Color> {
+        // first non-empty span's fg
+        line.spans
+            .iter()
+            .find(|s| !s.text.trim().is_empty())
+            .and_then(|s| s.style.fg)
+    }
+
+    #[test]
+    fn apply_colors_noun_and_verb_differently() {
+        let theme = Theme::dark();
+        let tagger = PosTagger::load();
+        let mut lines = vec![plain_line("the fox runs quickly")];
+        apply(&mut lines, &theme, &tagger, PosCategorySet::all(), None);
+        // At least two distinct foregrounds appear among the word spans.
+        let fgs: std::collections::HashSet<_> = lines[0]
+            .spans
+            .iter()
+            .filter(|s| !s.text.trim().is_empty())
+            .map(|s| format!("{:?}", s.style.fg))
+            .collect();
+        assert!(fgs.len() >= 2, "expected multiple POS colors, got {fgs:?}");
+    }
+
+    #[test]
+    fn apply_preserves_bold_attribute() {
+        let theme = Theme::dark();
+        let tagger = PosTagger::load();
+        let mut lines = vec![Line {
+            spans: vec![StyledSpan {
+                text: "the fox runs".to_string(),
+                style: Style {
+                    bold: true,
+                    ..Style::default()
+                },
+            }],
+            meta: LineMeta::None,
+        }];
+        apply(&mut lines, &theme, &tagger, PosCategorySet::all(), None);
+        assert!(
+            lines[0].spans.iter().all(|s| s.style.bold),
+            "bold must survive apply"
+        );
+    }
+
+    #[test]
+    fn apply_skips_inline_code_spans() {
+        let theme = Theme::dark();
+        let tagger = PosTagger::load();
+        let code_color = theme.inline_code_fg;
+        let mut lines = vec![Line {
+            spans: vec![StyledSpan {
+                text: "use foo".to_string(),
+                style: Style {
+                    code: true,
+                    fg: Some(code_color),
+                    ..Style::default()
+                },
+            }],
+            meta: LineMeta::None,
+        }];
+        apply(&mut lines, &theme, &tagger, PosCategorySet::all(), None);
+        // code span keeps its original fg
+        assert_eq!(fg_of_first_word(&lines[0]), Some(code_color));
+    }
+
+    #[test]
+    fn apply_skips_link_spans() {
+        let theme = Theme::dark();
+        let tagger = PosTagger::load();
+        let link_color = theme.link;
+        let mut lines = vec![Line {
+            spans: vec![StyledSpan {
+                text: "click here".to_string(),
+                style: Style {
+                    fg: Some(link_color),
+                    link_url: Some("http://x".to_string()),
+                    ..Style::default()
+                },
+            }],
+            meta: LineMeta::None,
+        }];
+        apply(&mut lines, &theme, &tagger, PosCategorySet::all(), None);
+        assert_eq!(fg_of_first_word(&lines[0]), Some(link_color));
+    }
+
+    #[test]
+    fn apply_skips_code_block_lines() {
+        let theme = Theme::dark();
+        let tagger = PosTagger::load();
+        let before = "let x = 1;".to_string();
+        let mut lines = vec![Line {
+            spans: vec![StyledSpan {
+                text: before.clone(),
+                style: Style::default(),
+            }],
+            meta: LineMeta::CodeContent { block_id: 0 },
+        }];
+        apply(&mut lines, &theme, &tagger, PosCategorySet::all(), None);
+        // untouched: still one span with no fg
+        assert_eq!(lines[0].spans.len(), 1);
+        assert!(lines[0].spans[0].style.fg.is_none());
+        assert_eq!(lines[0].spans[0].text, before);
+    }
+
+    #[test]
+    fn apply_skips_frontmatter_lines() {
+        let theme = Theme::dark();
+        let tagger = PosTagger::load();
+        let mut lines = vec![
+            plain_line("title: Hello"), // index 0 — frontmatter
+            plain_line("the fox runs"), // index 1 — real prose
+        ];
+        apply(&mut lines, &theme, &tagger, PosCategorySet::all(), Some(1));
+        // line 0 untouched (no fg), line 1 colored
+        assert!(lines[0].spans[0].style.fg.is_none());
+        assert!(lines[1].spans.iter().any(|s| s.style.fg.is_some()));
+    }
+
+    #[test]
+    fn apply_respects_category_subset() {
+        let theme = Theme::dark();
+        let tagger = PosTagger::load();
+        let only_nouns = PosCategorySet::from_names(&["noun".to_string()]).unwrap();
+        let mut lines = vec![plain_line("the fox runs quickly")];
+        apply(&mut lines, &theme, &tagger, only_nouns, None);
+        // Non-noun words keep no fg; at least the noun "fox" gets a color.
+        let has_color = lines[0].spans.iter().any(|s| s.style.fg.is_some());
+        assert!(has_color, "the noun should be colored");
+        let noun_color = theme.pos_noun;
+        let fox_colored = lines[0]
+            .spans
+            .iter()
+            .any(|s| s.text.contains("fox") && s.style.fg == Some(noun_color));
+        assert!(fox_colored, "'fox' should wear the noun color");
     }
 
     #[test]
