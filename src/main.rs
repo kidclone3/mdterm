@@ -153,13 +153,7 @@ fn main() {
                 }
             }
         } else {
-            markdown::render(
-                &content,
-                w,
-                &initial_theme,
-                line_numbers,
-                markdown::MermaidMode::AsciiThenSource,
-            )
+            markdown::render(&content, w, &initial_theme, line_numbers)
         };
         let wrapped = style::wrap_lines(&lines, w);
         if cli.no_color {

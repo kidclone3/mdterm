@@ -26,17 +26,6 @@ pub enum ImageProtocol {
     HalfBlock,
 }
 
-impl ImageProtocol {
-    /// True for protocols that paint images at full cell-pixel resolution, so
-    /// fine detail like diagram text stays readable. `HalfBlock` only resolves
-    /// two pixel-rows per cell — fine for photos, but text inside a rendered
-    /// mermaid diagram turns into an unreadable colored blur, so callers should
-    /// fall back to the native ASCII renderer in that case.
-    pub fn renders_crisp_images(self) -> bool {
-        !matches!(self, ImageProtocol::HalfBlock)
-    }
-}
-
 /// Query whether the active tmux session has `allow-passthrough` set to `on`
 /// or `all`.  Returns `false` on any error (tmux not found, option absent, etc.).
 ///
@@ -2271,19 +2260,6 @@ mod tests {
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     // ── has_attempted / has_image ────────────────────────────────────────────
-
-    #[test]
-    fn renders_crisp_images_only_for_high_resolution_protocols() {
-        // Kitty / iTerm2 / Sixel / Terminology paint at full cell-pixel
-        // resolution — diagram text stays readable.
-        assert!(ImageProtocol::Kitty.renders_crisp_images());
-        assert!(ImageProtocol::KittyUnicode.renders_crisp_images());
-        assert!(ImageProtocol::Iterm2.renders_crisp_images());
-        assert!(ImageProtocol::Sixel.renders_crisp_images());
-        assert!(ImageProtocol::Terminology.renders_crisp_images());
-        // HalfBlock only resolves two pixel-rows per cell — diagram text blurs.
-        assert!(!ImageProtocol::HalfBlock.renders_crisp_images());
-    }
 
     #[test]
     fn has_attempted_false_for_unknown_url() {

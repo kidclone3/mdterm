@@ -32,7 +32,7 @@ Ten source files in `src/`:
 - **image.rs** — Terminal image rendering with three protocols: Kitty (ID-based upload/placement), iTerm2 (inline image sequences), and Unicode half-block fallback. Fetches images on background threads via `std::sync::mpsc` (non-blocking — `start_fetch()` spawns a thread per URL, `poll_completed()` drains results each event-loop tick). Also handles downscaling, caching, and terminal cell metric detection.
 - **json.rs** — JSON file viewer. Parses JSON and renders it with semantic coloring (keys, strings, numbers, booleans, nulls) and indented structure.
 - **diagram/** — Mermaid rendering module tree. Public API `render_mermaid()` returns `Result<_, DiagramError>` and dispatches by diagram keyword; each renderer runs under `catch_unwind` so a parse error or panic shows an inline error banner plus the original source instead of crashing the TUI. Sub-modules:
-  - `mod.rs` — dispatch + `is_unsupported_diagram` (still-pending types) + `mermaid_image_url` (used only for unported types until Batch R).
+  - `mod.rs` — dispatch + `is_unsupported_diagram` (still-pending types that render as raw source).
   - `canvas.rs` — `Canvas` (character grid), `CanvasCell`, `draw_node` / `draw_node_with_height` / `draw_card`, `draw_edge_td` / `draw_edge_lr` (dispatch on `EdgeStyle { dashed, head, tail, label, far_label }`), `draw_crowsfoot`, `draw_tree_edge`, `junction_char`, `to_span_rows`. The `NodeShape` enum covers Rectangle, Rounded, Diamond, Circle, Final (ringed dot for stateDiagram), ForkBar (stateDiagram).
   - `theme.rs` — `edge_color()` palette + per-family color tables.
   - `sequence.rs` — `sequenceDiagram` parser + renderer (participants, messages, notes, self-loops, blocks).
