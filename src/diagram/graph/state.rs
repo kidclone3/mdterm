@@ -5,8 +5,8 @@ use crate::theme::Theme;
 
 use super::super::canvas::{Canvas, EdgeEnd, EdgeStyle, NodeShape};
 use super::super::theme::edge_color;
-use super::{assign_layers, label_box_width, order_within_layers, NodeLayout};
-use super::flowchart::{parse_arrow, Direction, Edge, Graph, Node};
+use super::flowchart::{Direction, Edge, Graph, Node, parse_arrow};
+use super::{NodeLayout, assign_layers, label_box_width, order_within_layers};
 
 // Internal ids for the [*] pseudo-state. Each [*] reference collapses to
 // either the initial or the final pseudo-state depending on which side of the
@@ -118,7 +118,11 @@ fn register_state(
             node.label = label.to_string();
         }
     } else {
-        let resolved_label = if label.is_empty() { id.to_string() } else { label.to_string() };
+        let resolved_label = if label.is_empty() {
+            id.to_string()
+        } else {
+            label.to_string()
+        };
         nodes.insert(
             id.to_string(),
             StateNode {
@@ -349,14 +353,14 @@ fn parse_state_diagram(code: &str) -> Option<StateDiagram> {
                 let (title, id) = parse_alias_decl(title_part);
                 let (body, advanced) = collect_block_body(&lines, i);
                 i = advanced;
-                register_state(
-                    &mut nodes,
-                    &mut node_order,
-                    &id,
-                    &title,
-                    StateKind::Normal,
+                register_state(&mut nodes, &mut node_order, &id, &title, StateKind::Normal);
+                composites.insert(
+                    id.clone(),
+                    CompositeBody {
+                        title,
+                        source: body,
+                    },
                 );
-                composites.insert(id.clone(), CompositeBody { title, source: body });
                 continue;
             }
 
@@ -367,13 +371,7 @@ fn parse_state_diagram(code: &str) -> Option<StateDiagram> {
             {
                 let label = rest_quoted[..end].to_string();
                 let id = id_part.trim().to_string();
-                register_state(
-                    &mut nodes,
-                    &mut node_order,
-                    &id,
-                    &label,
-                    StateKind::Normal,
-                );
+                register_state(&mut nodes, &mut node_order, &id, &label, StateKind::Normal);
                 continue;
             }
 
@@ -453,10 +451,7 @@ fn to_graph(diagram: &StateDiagram) -> Graph {
 }
 
 #[allow(clippy::too_many_lines)]
-fn render_state_canvas(
-    diagram: &StateDiagram,
-    theme: &Theme,
-) -> Option<(Canvas, usize)> {
+fn render_state_canvas(diagram: &StateDiagram, theme: &Theme) -> Option<(Canvas, usize)> {
     let graph = to_graph(diagram);
     let mut layers = assign_layers(&graph);
     order_within_layers(&mut layers, &graph);
@@ -538,8 +533,8 @@ fn render_state_canvas(
             .iter()
             .map(|id| widths.get(id).copied().unwrap_or(7))
             .collect();
-        let layer_width: usize = node_widths.iter().sum::<usize>()
-            + layer.len().saturating_sub(1) * h_gap;
+        let layer_width: usize =
+            node_widths.iter().sum::<usize>() + layer.len().saturating_sub(1) * h_gap;
         let layer_center = if layer_width > 0 { layer_width / 2 } else { 0 };
 
         let mut centers: Vec<usize> = Vec::with_capacity(layer.len());
@@ -617,12 +612,17 @@ fn render_state_canvas(
         if let Some(target) = positions.get(&note.target) {
             let text_chars: Vec<char> = note.text.chars().collect();
             let note_w = text_chars.len().max(3) + 4;
-            let label = if note.text.is_empty() { " " } else { &note.text };
+            let label = if note.text.is_empty() {
+                " "
+            } else {
+                &note.text
+            };
 
             let (note_cx, note_y) = match note.side {
                 NoteSide::Left => {
-                    let left_x =
-                        target.center_x.saturating_sub(target.width / 2 + note_w / 2 + 2);
+                    let left_x = target
+                        .center_x
+                        .saturating_sub(target.width / 2 + note_w / 2 + 2);
                     (left_x + note_w / 2, target.top_y)
                 }
                 NoteSide::Right => {
@@ -655,8 +655,8 @@ pub(crate) fn render(code: &str, theme: &Theme) -> Option<(Vec<Vec<StyledSpan>>,
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::super::render_mermaid;
+    use super::*;
     use crate::style::StyledSpan;
     use crate::theme::Theme;
 
@@ -702,10 +702,8 @@ mod tests {
 
     #[test]
     fn parses_long_label_alias() {
-        let d = parse_state_diagram(
-            "stateDiagram-v2\nstate \"Long Label\" as Foo\nFoo --> Bar",
-        )
-        .unwrap();
+        let d = parse_state_diagram("stateDiagram-v2\nstate \"Long Label\" as Foo\nFoo --> Bar")
+            .unwrap();
         let foo = &d.nodes["Foo"];
         assert_eq!(foo.label, "Long Label");
         assert_eq!(foo.kind, StateKind::Normal);
@@ -760,19 +758,26 @@ mod tests {
         let rows = render_to_text("stateDiagram-v2\n[*] --> Idle\nIdle --> [*]");
         let all: String = rows.join("\n");
         // Initial state glyph.
-        assert!(all.contains('\u{25c9}'), "initial state should show \u{25c9}, got:\n{all}");
+        assert!(
+            all.contains('\u{25c9}'),
+            "initial state should show \u{25c9}, got:\n{all}"
+        );
         // Final state glyph (also \u{25c9} inside its ring).
         assert!(
             all.matches('\u{25c9}').count() >= 2,
             "expected at least two \u{25c9} (initial + final), got:\n{all}"
         );
         // The Idle label should appear.
-        assert!(all.contains("Idle"), "Idle label should appear, got:\n{all}");
+        assert!(
+            all.contains("Idle"),
+            "Idle label should appear, got:\n{all}"
+        );
     }
 
     #[test]
     fn renders_arrow_glyphs() {
-        let rows = render_to_text("stateDiagram-v2\n[*] --> Idle\nIdle --> Active : go\nActive --> [*]");
+        let rows =
+            render_to_text("stateDiagram-v2\n[*] --> Idle\nIdle --> Active : go\nActive --> [*]");
         let all: String = rows.join("\n");
         // TD routing uses \u{25bc} (down-arrow) at the destination end.
         assert!(
@@ -780,7 +785,10 @@ mod tests {
             "expected a \u{25bc} or \u{25b6} arrow glyph, got:\n{all}"
         );
         // Transition label should appear.
-        assert!(all.contains("go"), "transition label should appear, got:\n{all}");
+        assert!(
+            all.contains("go"),
+            "transition label should appear, got:\n{all}"
+        );
     }
 
     #[test]
@@ -798,9 +806,7 @@ mod tests {
 
     #[test]
     fn renders_note_text() {
-        let rows = render_to_text(
-            "stateDiagram-v2\n[*] --> Idle\nnote right of Idle : ping",
-        );
+        let rows = render_to_text("stateDiagram-v2\n[*] --> Idle\nnote right of Idle : ping");
         let all: String = rows.join("\n");
         assert!(all.contains("ping"), "note text should appear, got:\n{all}");
     }
@@ -831,7 +837,14 @@ mod tests {
         .expect("rendered");
         assert!(width > 0, "canvas width should be positive");
         assert!(!rows.is_empty(), "should produce at least one row");
-        let all: String = rows.iter().map(|r| row_text(r)).collect::<Vec<_>>().join("\n");
-        assert!(all.contains("Active"), "known state label should appear, got:\n{all}");
+        let all: String = rows
+            .iter()
+            .map(|r| row_text(r))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            all.contains("Active"),
+            "known state label should appear, got:\n{all}"
+        );
     }
 }

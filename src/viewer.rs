@@ -34,6 +34,10 @@ pub struct ViewerOptions {
     pub slide_mode: bool,
     pub line_numbers: bool,
     pub width_override: Option<usize>,
+    #[allow(dead_code)]
+    pub pos_enabled: bool,
+    #[allow(dead_code)]
+    pub pos_categories: Vec<String>,
 }
 
 pub fn run(opts: ViewerOptions) -> io::Result<()> {
@@ -303,6 +307,12 @@ struct ViewerState {
     slide_mode: bool,
     line_numbers: bool,
     width_override: Option<usize>,
+    #[cfg_attr(not(feature = "pos"), allow(dead_code))]
+    pos_enabled: bool,
+    #[cfg(feature = "pos")]
+    pos_categories: crate::pos::PosCategorySet,
+    #[cfg(feature = "pos")]
+    pos_tagger: Option<crate::pos::PosTagger>,
 
     // Mode
     mode: ViewMode,
@@ -438,6 +448,7 @@ impl ViewerState {
             wrapped: Vec::new(),
             doc_info: DocumentInfo {
                 code_blocks: Vec::new(),
+                frontmatter_lines: None,
             },
             offset: 0,
             h_offset: 0,
@@ -447,6 +458,24 @@ impl ViewerState {
             slide_mode: opts.slide_mode,
             line_numbers: opts.line_numbers,
             width_override: opts.width_override,
+            pos_enabled: opts.pos_enabled,
+            #[cfg(feature = "pos")]
+            pos_categories: {
+                use crate::pos::PosCategorySet;
+                if opts.pos_categories.is_empty() {
+                    PosCategorySet::all()
+                } else {
+                    match PosCategorySet::from_names(&opts.pos_categories) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("{e}");
+                            PosCategorySet::all()
+                        }
+                    }
+                }
+            },
+            #[cfg(feature = "pos")]
+            pos_tagger: None,
             mode: ViewMode::Normal,
             search: SearchState::new(),
             toc_entries: Vec::new(),
@@ -571,7 +600,7 @@ impl ViewerState {
         let saved_offset = self.offset;
 
         let cw = self.content_width();
-        let (lines, doc_info) = if self.filename.ends_with(".json") {
+        let (mut lines, doc_info) = if self.filename.ends_with(".json") {
             // Parse once and cache
             if self.cached_json.is_none() {
                 match serde_json::from_str(&self.content) {
@@ -651,6 +680,30 @@ impl ViewerState {
                 entry.push_str(&text);
             }
         }
+
+        #[cfg(feature = "pos")]
+        if self.pos_enabled && self.json_view.is_none() {
+            if self.pos_tagger.is_none() {
+                match crate::pos::PosTagger::load() {
+                    Ok(tagger) => self.pos_tagger = Some(tagger),
+                    Err(e) => {
+                        self.pos_enabled = false;
+                        self.set_toast(format!("POS disabled: {e}"));
+                    }
+                }
+            }
+            if let Some(tagger) = &self.pos_tagger {
+                crate::pos::apply(
+                    &mut lines,
+                    &self.theme,
+                    tagger,
+                    self.pos_categories,
+                    doc_info.frontmatter_lines,
+                );
+            }
+        }
+        // Avoid unused-variable warning when feature is off.
+        let _ = &mut lines;
 
         self.wrapped = wrap_lines(&lines, cw);
         self.doc_info = doc_info;
@@ -1733,6 +1786,24 @@ fn handle_normal(state: &mut ViewerState, code: KeyCode, mods: KeyModifiers) -> 
             } else {
                 "Line numbers OFF"
             });
+        }
+
+        // Part-of-speech highlighting toggle
+        KeyCode::Char('P') => {
+            #[cfg(feature = "pos")]
+            {
+                state.pos_enabled = !state.pos_enabled;
+                state.rebuild();
+                state.set_toast(if state.pos_enabled {
+                    "POS highlighting ON"
+                } else {
+                    "POS highlighting OFF"
+                });
+            }
+            #[cfg(not(feature = "pos"))]
+            {
+                state.set_toast("POS highlighting requires: cargo install mdterm --features pos");
+            }
         }
 
         // Mouse capture toggle
@@ -3111,7 +3182,11 @@ fn render_status_bar(stdout: &mut io::Stdout, state: &ViewerState) -> io::Result
         let num_slides = state.slide_boundaries.len().max(1);
         let slide_label = format!(" Slide {}/{} ", state.current_slide + 1, num_slides);
         let slide_len = slide_label.chars().count();
-        let hint = " ←/→ navigate · t theme ";
+        let hint = if cfg!(feature = "pos") {
+            " ←/→ navigate · t theme · P pos "
+        } else {
+            " ←/→ navigate · t theme "
+        };
         let hint_len = hint.chars().count();
         let needed = 4 + slide_len + hint_len;
         let (show_hint, fill) = if width > needed {
@@ -3288,7 +3363,11 @@ fn render_status_bar(stdout: &mut io::Stdout, state: &ViewerState) -> io::Result
     };
     let loading_len = loading_label.chars().count();
 
-    let hint = " h/l pan · / search · o toc · f links · L lines · ? help ";
+    let hint = if cfg!(feature = "pos") {
+        " h/l pan · / search · o toc · f links · L lines · P pos · ? help "
+    } else {
+        " h/l pan · / search · o toc · f links · L lines · ? help "
+    };
     let hint_len = hint.chars().count();
     let needed = 4 + hint_len + loading_len + pos_len;
     let (show_hint, fill) = if width > needed {
@@ -4632,6 +4711,8 @@ mod tests {
             slide_mode: false,
             line_numbers: false,
             width_override: None,
+            pos_enabled: false,
+            pos_categories: Vec::new(),
         };
         let mut state = ViewerState::new(opts, 80, 24);
         state.wrapped = lines;

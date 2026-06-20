@@ -431,8 +431,7 @@ fn render_er(
 
         for (i, id) in layer.iter().enumerate() {
             let w = node_widths[i];
-            let cx = (canvas_center as isize + centers_in_layer[i] as isize
-                - layer_center as isize)
+            let cx = (canvas_center as isize + centers_in_layer[i] as isize - layer_center as isize)
                 .max(w as isize / 2) as usize;
             let left_x = cx.saturating_sub(w / 2);
             let h = heights.get(id).copied().unwrap_or(3);
@@ -482,7 +481,13 @@ fn render_er(
         );
 
         if src_bottom + 1 < dst_top {
-            canvas.draw_crowsfoot(src_cx, src_bottom + 1, CrowDir::Down, rel.from_card, edge_fg);
+            canvas.draw_crowsfoot(
+                src_cx,
+                src_bottom + 1,
+                CrowDir::Down,
+                rel.from_card,
+                edge_fg,
+            );
             if dst_top > 0 {
                 canvas.draw_crowsfoot(dst_cx, dst_top - 1, CrowDir::Up, rel.to_card, edge_fg);
             }
@@ -625,7 +630,10 @@ mod tests {
 
     #[test]
     fn rejects_malformed_operator() {
-        assert!(parse_relationship("A --> B").is_none(), "flowchart arrow is not ER syntax");
+        assert!(
+            parse_relationship("A --> B").is_none(),
+            "flowchart arrow is not ER syntax"
+        );
         assert!(parse_relationship("A |-| B").is_none(), "bad joiner");
     }
 
@@ -633,22 +641,20 @@ mod tests {
 
     #[test]
     fn renders_entity_name_and_field_rows() {
-        let out = render_text_full(
-            "erDiagram\nentity CUSTOMER {\nbigint id PK\nstring name\n}",
-        );
+        let out = render_text_full("erDiagram\nentity CUSTOMER {\nbigint id PK\nstring name\n}");
         assert!(out.contains("CUSTOMER"), "entity name should appear: {out}");
         assert!(out.contains("bigint"), "field type should appear: {out}");
         assert!(out.contains("id"), "field name should appear: {out}");
-        assert!(out.contains("string"), "second field type should appear: {out}");
+        assert!(
+            out.contains("string"),
+            "second field type should appear: {out}"
+        );
     }
 
     #[test]
     fn renders_pk_badge_in_yellow() {
         let theme = Theme::dark();
-        let spans = row_spans(
-            "erDiagram\nentity CUSTOMER {\nbigint id PK\n}",
-            &theme,
-        );
+        let spans = row_spans("erDiagram\nentity CUSTOMER {\nbigint id PK\n}", &theme);
         let flat: String = spans
             .iter()
             .flat_map(|r| r.iter().map(|s| s.text.as_str()))
@@ -656,9 +662,8 @@ mod tests {
         assert!(flat.contains("PK"), "PK badge text should appear: {flat}");
 
         let pk_yellow = spans.iter().any(|row| {
-            row.iter().any(|s| {
-                s.text.contains("PK") && s.style.fg == Some(theme.key_badge_pk)
-            })
+            row.iter()
+                .any(|s| s.text.contains("PK") && s.style.fg == Some(theme.key_badge_pk))
         });
         assert!(pk_yellow, "PK badge should use key_badge_pk color");
     }
@@ -677,9 +682,8 @@ mod tests {
         assert!(flat.contains("FK"), "FK badge text should appear: {flat}");
 
         let fk_blue = spans.iter().any(|row| {
-            row.iter().any(|s| {
-                s.text.contains("FK") && s.style.fg == Some(theme.key_badge_fk)
-            })
+            row.iter()
+                .any(|s| s.text.contains("FK") && s.style.fg == Some(theme.key_badge_fk))
         });
         assert!(fk_blue, "FK badge should use key_badge_fk color");
     }
@@ -687,9 +691,7 @@ mod tests {
     #[test]
     fn renders_crowsfoot_glyph_at_endpoint() {
         let out = render_text_full("erDiagram\nCUSTOMER ||--o{ ORDER : places");
-        let has_crow = ['│', '|', 'o', '⟨', '⟩']
-            .iter()
-            .any(|c| out.contains(*c));
+        let has_crow = ['│', '|', 'o', '⟨', '⟩'].iter().any(|c| out.contains(*c));
         assert!(
             has_crow,
             "a crow's-foot glyph should appear at an endpoint: {out}"
@@ -710,14 +712,15 @@ mod tests {
     #[test]
     fn canvas_has_positive_dimensions_and_places_entity_name() {
         let theme = Theme::dark();
-        let (rows, width) = render(
-            "erDiagram\nentity CUSTOMER {\nbigint id PK\n}",
-            &theme,
-        )
-        .expect("render ok");
+        let (rows, width) =
+            render("erDiagram\nentity CUSTOMER {\nbigint id PK\n}", &theme).expect("render ok");
         assert!(width > 0, "canvas width should be positive");
         assert!(!rows.is_empty(), "should produce at least one row");
-        let joined: String = rows.iter().map(|r| row_text(r)).collect::<Vec<_>>().join("\n");
+        let joined: String = rows
+            .iter()
+            .map(|r| row_text(r))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             joined.contains("CUSTOMER"),
             "entity name should be placed somewhere"
@@ -728,13 +731,14 @@ mod tests {
     fn dispatcher_routes_erdiagram_through_native_renderer() {
         use crate::diagram::render_mermaid;
         let theme = Theme::dark();
-        let result = render_mermaid(
-            "erDiagram\nCUSTOMER ||--o{ ORDER : places",
-            &theme,
-        );
+        let result = render_mermaid("erDiagram\nCUSTOMER ||--o{ ORDER : places", &theme);
         assert!(result.is_ok(), "dispatcher should succeed for erDiagram");
         let (rows, _w) = result.unwrap();
-        let joined: String = rows.iter().map(|r| row_text(r)).collect::<Vec<_>>().join("\n");
+        let joined: String = rows
+            .iter()
+            .map(|r| row_text(r))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(joined.contains("CUSTOMER") && joined.contains("ORDER"));
     }
 }

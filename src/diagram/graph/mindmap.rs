@@ -84,7 +84,11 @@ fn parse_mindmap(code: &str) -> Option<MindNode> {
     Some(root)
 }
 
-fn build_node(entries: &[(usize, &str)], idx: &mut usize, current_depth: usize) -> Option<MindNode> {
+fn build_node(
+    entries: &[(usize, &str)],
+    idx: &mut usize,
+    current_depth: usize,
+) -> Option<MindNode> {
     if *idx >= entries.len() {
         return None;
     }
@@ -151,11 +155,7 @@ struct Placed {
     width: usize,
 }
 
-fn collect_column_widths(
-    node: &MindNode,
-    signed_depth: isize,
-    widths: &mut HashMap<isize, usize>,
-) {
+fn collect_column_widths(node: &MindNode, signed_depth: isize, widths: &mut HashMap<isize, usize>) {
     let w = label_box_width(&node.label, node.shape);
     widths
         .entry(signed_depth)
@@ -213,10 +213,7 @@ fn layout_tree(root: &MindNode) -> Layout {
         .map(|c| subtree_rows(c))
         .sum::<usize>()
         + right_children.len().saturating_sub(1) * SIBLING_GAP;
-    let left_height: usize = left_children
-        .iter()
-        .map(|c| subtree_rows(c))
-        .sum::<usize>()
+    let left_height: usize = left_children.iter().map(|c| subtree_rows(c)).sum::<usize>()
         + left_children.len().saturating_sub(1) * SIBLING_GAP;
     let canvas_height = right_height.max(left_height).max(NODE_HEIGHT);
 
@@ -431,7 +428,8 @@ mod tests {
 
     #[test]
     fn parser_skips_classdef_and_strips_style_class_suffix() {
-        let code = "mindmap\n  root\n    A\n  classDef foo fill:#fff\n    B:::foo\n  style A fill:#f00";
+        let code =
+            "mindmap\n  root\n    A\n  classDef foo fill:#fff\n    B:::foo\n  style A fill:#f00";
         let root = parse_mindmap(code).expect("parse");
         assert_eq!(root.label, "root");
         assert_eq!(root.children.len(), 2);
@@ -585,19 +583,29 @@ mod tests {
 
     #[test]
     fn render_smoke_includes_root_and_level1_labels() {
-        let (rows, _w) = render_rows("mindmap\n  root((The Root))\n    Alpha\n    Beta")
-            .expect("rendered");
-        let combined: String = rows.iter().map(|r| row_text(r)).collect::<Vec<_>>().join("\n");
-        assert!(combined.contains("The Root"), "root label missing:\n{combined}");
+        let (rows, _w) =
+            render_rows("mindmap\n  root((The Root))\n    Alpha\n    Beta").expect("rendered");
+        let combined: String = rows
+            .iter()
+            .map(|r| row_text(r))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            combined.contains("The Root"),
+            "root label missing:\n{combined}"
+        );
         assert!(combined.contains("Alpha"), "Alpha missing:\n{combined}");
         assert!(combined.contains("Beta"), "Beta missing:\n{combined}");
     }
 
     #[test]
     fn render_smoke_root_circle_glyph_for_double_parens() {
-        let (rows, _w) =
-            render_rows("mindmap\n  root((Center))\n    A").expect("rendered");
-        let combined: String = rows.iter().map(|r| row_text(r)).collect::<Vec<_>>().join("\n");
+        let (rows, _w) = render_rows("mindmap\n  root((Center))\n    A").expect("rendered");
+        let combined: String = rows
+            .iter()
+            .map(|r| row_text(r))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             combined.contains('╭') && combined.contains('╮'),
             "expected rounded (circle) corners around root:\n{combined}"
@@ -606,22 +614,29 @@ mod tests {
 
     #[test]
     fn render_smoke_emits_tree_edge_glyphs() {
-        let (rows, _w) = render_rows("mindmap\n  root\n    A\n    B\n    C\n    D")
-            .expect("rendered");
-        let combined: String = rows.iter().map(|r| row_text(r)).collect::<Vec<_>>().join("\n");
+        let (rows, _w) =
+            render_rows("mindmap\n  root\n    A\n    B\n    C\n    D").expect("rendered");
+        let combined: String = rows
+            .iter()
+            .map(|r| row_text(r))
+            .collect::<Vec<_>>()
+            .join("\n");
         let has_corner = combined.contains('╮')
             || combined.contains('╯')
             || combined.contains('╭')
             || combined.contains('╰');
         let has_horizontal = combined.contains('─');
         assert!(has_corner, "expected a rounded corner glyph:\n{combined}");
-        assert!(has_horizontal, "expected horizontal connector ─:\n{combined}");
+        assert!(
+            has_horizontal,
+            "expected horizontal connector ─:\n{combined}"
+        );
     }
 
     #[test]
     fn render_layout_regression_positive_dimensions_and_root_position() {
-        let (rows, w) =
-            render_rows("mindmap\n  root((R))\n    A\n      A1\n      A2\n    B").expect("rendered");
+        let (rows, w) = render_rows("mindmap\n  root((R))\n    A\n      A1\n      A2\n    B")
+            .expect("rendered");
         assert!(w > 0, "canvas width should be positive, got {w}");
         assert!(
             !rows.is_empty(),

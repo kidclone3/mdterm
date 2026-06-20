@@ -36,6 +36,7 @@ A terminal-based Markdown viewer written in Rust. Renders Markdown files with sy
 - **Config file** — `~/.config/mdterm/config.toml` for persistent preferences
 - **Word wrapping** — Responsive re-wrapping on terminal resize
 - **JSON viewer** — Render JSON files with syntax-colored keys, values, and structure
+- **Part-of-speech highlighting** *(optional feature)* — Color prose words by part of speech (noun, verb, adjective, …) with a toggle, powered by a vendored averaged-perceptron tagger. Enable at install time; see below.
 - **Pipe-friendly** — Outputs plain styled text when stdout is piped
 
 ## Installation
@@ -44,6 +45,16 @@ Requires Rust 1.85+ (edition 2024).
 
 ```bash
 cargo install --path .
+```
+
+### Optional: POS highlighting
+
+The `pos` feature adds part-of-speech coloring (~2 MB of embedded model data). It
+is off by default to keep the default build lean.
+
+```bash
+cargo install --features pos --path .    # with POS highlighting
+cargo install --path .                   # without (default)
 ```
 
 ## Usage
@@ -102,6 +113,7 @@ mdterm README.md | less -R
 | `f` | Link picker (open URLs / follow local links) |
 | `t` | Toggle dark/light theme |
 | `L` | Toggle line numbers in code blocks |
+| `P` | Toggle part-of-speech highlighting (requires `pos` feature) |
 | Click heading | Copy heading section to clipboard |
 | Click list | Copy entire list to clipboard |
 | Click code block | Copy code block to clipboard |
@@ -128,6 +140,10 @@ Create `~/.config/mdterm/config.toml`:
 theme = "dark"          # "dark" or "light"
 line_numbers = false     # show line numbers in code blocks
 width = 0               # display width (0 = auto)
+
+[pos]                   # part-of-speech highlighting (requires `pos` feature)
+enabled = false          # start with POS on
+categories = ["noun", "verb"]  # only these; omit or "all" for every category
 ```
 
 CLI flags override config file settings.
@@ -147,6 +163,7 @@ Options:
   -l, --line-numbers       Show line numbers in code blocks
       --export <FORMAT>    Export format (html)
       --no-color           Disable colors
+      --pos [CATEGORIES]  Part-of-speech highlighting (e.g. --pos noun,verb; needs `pos` feature)
   -h, --help               Print help
   -V, --version            Print version
 ```
@@ -160,6 +177,18 @@ cargo build --release
 ## Demo
 
 ![Demo](demo.gif)
+
+## Third-Party Assets
+
+The optional `pos` feature vendors:
+
+- **Averaged-perceptron tagger logic** adapted from
+  [`postagger.rs`](https://github.com/shubham0204/postagger.rs) (Apache-2.0).
+- **Pretrained model** (`averaged_perceptron_tagger`) from
+  [NLTK `nltk_data`](https://github.com/nltk/nltk_data) (Apache-2.0),
+  redistributed in `pos_model/`.
+
+Both are Apache-2.0 licensed and compatible with mdterm's MIT license.
 
 ## License
 

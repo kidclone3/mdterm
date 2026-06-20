@@ -342,7 +342,9 @@ impl Canvas {
 
         let (tl, tr, bl, br, h, v) = match shape {
             NodeShape::Rectangle => ('┌', '┐', '└', '┘', '─', '│'),
-            NodeShape::Rounded | NodeShape::Circle | NodeShape::Final => ('╭', '╮', '╰', '╯', '─', '│'),
+            NodeShape::Rounded | NodeShape::Circle | NodeShape::Final => {
+                ('╭', '╮', '╰', '╯', '─', '│')
+            }
             NodeShape::Diamond => ('◆', '◆', '◆', '◆', '─', '│'),
             NodeShape::ForkBar => unreachable!(),
         };
@@ -640,7 +642,11 @@ impl Canvas {
             // last row for a head glyph; fill everything in between with body.
             let y_first = src_bottom_y + 1;
             let y_last = dst_top_y - 1;
-            let body_lo = if tail_ch.is_some() { y_first + 1 } else { y_first };
+            let body_lo = if tail_ch.is_some() {
+                y_first + 1
+            } else {
+                y_first
+            };
             let body_hi = if head_ch.is_some() { y_last } else { dst_top_y };
             for y in body_lo..body_hi {
                 draw_vert(self, src_cx, y);
@@ -717,7 +723,11 @@ impl Canvas {
             }
 
             // Down from mid_y to destination
-            let dst_body_hi = if head_ch.is_some() { dst_top_y - 1 } else { dst_top_y };
+            let dst_body_hi = if head_ch.is_some() {
+                dst_top_y - 1
+            } else {
+                dst_top_y
+            };
             for y in (mid_y + 1)..dst_body_hi {
                 draw_vert(self, dst_cx, y);
             }
@@ -803,8 +813,16 @@ impl Canvas {
             // the last column for a head glyph.
             let x_first = src_right_x + 1;
             let x_last = dst_left_x - 1;
-            let body_lo = if tail_ch.is_some() { x_first + 1 } else { x_first };
-            let body_hi = if head_ch.is_some() { x_last } else { dst_left_x };
+            let body_lo = if tail_ch.is_some() {
+                x_first + 1
+            } else {
+                x_first
+            };
+            let body_hi = if head_ch.is_some() {
+                x_last
+            } else {
+                dst_left_x
+            };
             for x in body_lo..body_hi {
                 draw_horz(self, x, src_cy);
             }
@@ -868,7 +886,11 @@ impl Canvas {
             self.set(mid_x, dst_cy, dst_turn, fg);
 
             // Right from mid_x to destination. Reserve last column for head.
-            let dst_body_hi = if head_ch.is_some() { dst_left_x - 1 } else { dst_left_x };
+            let dst_body_hi = if head_ch.is_some() {
+                dst_left_x - 1
+            } else {
+                dst_left_x
+            };
             for x in (mid_x + 1)..dst_body_hi {
                 draw_horz(self, x, dst_cy);
             }
@@ -1097,10 +1119,19 @@ mod tests {
         let mut canvas = Canvas::new(20, 10);
         canvas.draw_tree_edge(6, 5, 14, 7, None);
 
-        assert_eq!(canvas.cells[5][10].ch, '╮', "source corner (right then down)");
-        assert_eq!(canvas.cells[7][10].ch, '╰', "destination corner (up then right)");
+        assert_eq!(
+            canvas.cells[5][10].ch, '╮',
+            "source corner (right then down)"
+        );
+        assert_eq!(
+            canvas.cells[7][10].ch, '╰',
+            "destination corner (up then right)"
+        );
         for x in 7..10 {
-            assert_eq!(canvas.cells[5][x].ch, '─', "horizontal near parent at x={x}");
+            assert_eq!(
+                canvas.cells[5][x].ch, '─',
+                "horizontal near parent at x={x}"
+            );
         }
         assert_eq!(canvas.cells[6][10].ch, '│', "vertical segment");
         for x in 11..14 {
@@ -1113,10 +1144,19 @@ mod tests {
         let mut canvas = Canvas::new(20, 10);
         canvas.draw_tree_edge(14, 5, 6, 7, None);
 
-        assert_eq!(canvas.cells[5][10].ch, '╭', "source corner (left then down)");
-        assert_eq!(canvas.cells[7][10].ch, '╯', "destination corner (up then left)");
+        assert_eq!(
+            canvas.cells[5][10].ch, '╭',
+            "source corner (left then down)"
+        );
+        assert_eq!(
+            canvas.cells[7][10].ch, '╯',
+            "destination corner (up then left)"
+        );
         for x in 11..14 {
-            assert_eq!(canvas.cells[5][x].ch, '─', "horizontal near parent at x={x}");
+            assert_eq!(
+                canvas.cells[5][x].ch, '─',
+                "horizontal near parent at x={x}"
+            );
         }
         assert_eq!(canvas.cells[6][10].ch, '│', "vertical segment");
         for x in 7..10 {

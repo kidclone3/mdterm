@@ -11,8 +11,8 @@ mod theme;
 // several are not yet consumed inside the crate, so allow unused until then.
 #[allow(unused_imports)]
 pub(crate) use canvas::{
-    junction_char, Canvas, CanvasCell, CardDrawRow, EdgeEnd, EdgeStyle, NodeShape, CONN_DOWN,
-    CONN_LEFT, CONN_RIGHT, CONN_UP,
+    CONN_DOWN, CONN_LEFT, CONN_RIGHT, CONN_UP, Canvas, CanvasCell, CardDrawRow, EdgeEnd, EdgeStyle,
+    NodeShape, junction_char,
 };
 #[allow(unused_imports)]
 pub(crate) use graph::NodeLayout;
@@ -131,9 +131,7 @@ pub fn render_mermaid(
 ) -> Result<(Vec<Vec<StyledSpan>>, usize), DiagramError> {
     let kw = first_diagram_keyword(code);
     match kw {
-        Some("sequenceDiagram") => {
-            dispatch("sequenceDiagram", || sequence::render(code, theme))
-        }
+        Some("sequenceDiagram") => dispatch("sequenceDiagram", || sequence::render(code, theme)),
         Some("stateDiagram") | Some("stateDiagram-v2") => {
             dispatch("stateDiagram", || graph::state::render(code, theme))
         }
@@ -206,5 +204,4 @@ mod tests {
             other => panic!("expected RenderFailed, got {other:?}"),
         }
     }
-
 }

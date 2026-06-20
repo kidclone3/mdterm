@@ -295,11 +295,7 @@ fn parse_relationship(line: &str) -> Option<ClassEdge> {
 
     let label = if let Some(stripped) = rest.strip_prefix(':') {
         let l = stripped.trim().to_string();
-        if l.is_empty() {
-            None
-        } else {
-            Some(l)
-        }
+        if l.is_empty() { None } else { Some(l) }
     } else {
         None
     };
@@ -535,8 +531,7 @@ fn render_class(
 
         for (i, id) in layer.iter().enumerate() {
             let w = node_widths[i];
-            let cx = (canvas_center as isize + centers_in_layer[i] as isize
-                - layer_center as isize)
+            let cx = (canvas_center as isize + centers_in_layer[i] as isize - layer_center as isize)
                 .max(w as isize / 2) as usize;
             let left_x = cx.saturating_sub(w / 2);
             let h = heights.get(id).copied().unwrap_or(3);
@@ -653,9 +648,11 @@ mod tests {
 
     #[test]
     fn strips_generics_for_layout_key_keeps_them_in_title() {
-        let (nodes, _edges) =
-            parse_class_diagram("classDiagram\nclass Foo<T, K>").unwrap();
-        assert_eq!(nodes[0].name, "Foo", "base name used for relationship lookup");
+        let (nodes, _edges) = parse_class_diagram("classDiagram\nclass Foo<T, K>").unwrap();
+        assert_eq!(
+            nodes[0].name, "Foo",
+            "base name used for relationship lookup"
+        );
         assert_eq!(nodes[0].title, "Foo<T, K>", "title preserves generics");
     }
 
@@ -671,7 +668,11 @@ mod tests {
         let src = "classDiagram\nclass Foo {\n<<interface>>\n+method(): void\n}";
         let (nodes, _edges) = parse_class_diagram(src).unwrap();
         assert_eq!(nodes[0].stereotype.as_deref(), Some("<<interface>>"));
-        assert_eq!(nodes[0].members.len(), 1, "stereotype line not counted as a member");
+        assert_eq!(
+            nodes[0].members.len(),
+            1,
+            "stereotype line not counted as a member"
+        );
         assert_eq!(nodes[0].members[0].text, "method(): void");
     }
 
@@ -756,12 +757,16 @@ mod tests {
 
     #[test]
     fn renders_class_name_and_member_rows() {
-        let out = render_text_full(
-            "classDiagram\nclass Foo {\n+attr: int\n-method(): void\n}",
-        );
+        let out = render_text_full("classDiagram\nclass Foo {\n+attr: int\n-method(): void\n}");
         assert!(out.contains("Foo"), "class name should appear: {out}");
-        assert!(out.contains("attr: int"), "public member should appear: {out}");
-        assert!(out.contains("method(): void"), "private member should appear: {out}");
+        assert!(
+            out.contains("attr: int"),
+            "public member should appear: {out}"
+        );
+        assert!(
+            out.contains("method(): void"),
+            "private member should appear: {out}"
+        );
     }
 
     #[test]
@@ -770,7 +775,10 @@ mod tests {
         // directly below the title bar.
         let out = render_text_full("classDiagram\nclass Foo [<<interface>>]");
         assert!(out.contains("Foo"), "title row should appear");
-        assert!(out.contains("<<interface>>"), "stereotype text should appear");
+        assert!(
+            out.contains("<<interface>>"),
+            "stereotype text should appear"
+        );
     }
 
     #[test]
@@ -786,13 +794,19 @@ mod tests {
     #[test]
     fn composition_edge_renders_filled_diamond() {
         let out = render_text_full("classDiagram\nCar *-- Wheel");
-        assert!(out.contains('◆'), "composition should render ◆; got:\n{out}");
+        assert!(
+            out.contains('◆'),
+            "composition should render ◆; got:\n{out}"
+        );
     }
 
     #[test]
     fn aggregation_edge_renders_hollow_diamond() {
         let out = render_text_full("classDiagram\nLibrary o-- Book");
-        assert!(out.contains('◇'), "aggregation should render ◇; got:\n{out}");
+        assert!(
+            out.contains('◇'),
+            "aggregation should render ◇; got:\n{out}"
+        );
     }
 
     #[test]
@@ -812,15 +826,19 @@ mod tests {
     #[test]
     fn canvas_has_positive_dimensions_and_places_class_name() {
         let theme = Theme::dark();
-        let (rows, width) = render(
-            "classDiagram\nclass Foo {\n+attr: int\n}",
-            &theme,
-        )
-        .expect("render ok");
+        let (rows, width) =
+            render("classDiagram\nclass Foo {\n+attr: int\n}", &theme).expect("render ok");
         assert!(width > 0, "canvas width should be positive");
         assert!(!rows.is_empty(), "should produce at least one row");
-        let joined: String = rows.iter().map(|r| row_text(r)).collect::<Vec<_>>().join("\n");
-        assert!(joined.contains("Foo"), "class name should be placed somewhere");
+        let joined: String = rows
+            .iter()
+            .map(|r| row_text(r))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            joined.contains("Foo"),
+            "class name should be placed somewhere"
+        );
     }
 
     #[test]
@@ -830,7 +848,11 @@ mod tests {
         let result = render_mermaid("classDiagram\nclass A\nclass B\nA --> B", &theme);
         assert!(result.is_ok(), "dispatcher should succeed for classDiagram");
         let (rows, _w) = result.unwrap();
-        let joined: String = rows.iter().map(|r| row_text(r)).collect::<Vec<_>>().join("\n");
+        let joined: String = rows
+            .iter()
+            .map(|r| row_text(r))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(joined.contains('A') && joined.contains('B'));
     }
 }

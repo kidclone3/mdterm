@@ -14,6 +14,9 @@ pub struct Style {
     pub strikethrough: bool,
     pub dim: bool,
     pub link_url: Option<String>,
+    /// Marks inline-code spans so the (feature-gated) POS coloring pass can exempt them.
+    #[allow(dead_code)]
+    pub code: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -87,6 +90,10 @@ pub struct CodeBlockContent {
 /// Metadata returned alongside rendered lines
 pub struct DocumentInfo {
     pub code_blocks: Vec<CodeBlockContent>,
+    /// Number of leading source lines consumed by YAML frontmatter, if any.
+    /// Lets the (feature-gated) POS coloring pass skip frontmatter.
+    #[allow(dead_code)]
+    pub frontmatter_lines: Option<usize>,
 }
 
 pub fn wrap_lines(lines: &[Line], width: usize) -> Vec<Line> {
@@ -583,5 +590,20 @@ mod tests {
         };
         let wrapped = wrap_lines(&[line], 80);
         assert_eq!(wrapped.len(), 1);
+    }
+
+    #[test]
+    fn default_style_has_code_false() {
+        let s = Style::default();
+        assert!(!s.code);
+    }
+
+    #[test]
+    fn document_info_default_frontmatter_is_none() {
+        let di = DocumentInfo {
+            code_blocks: Vec::new(),
+            frontmatter_lines: None,
+        };
+        assert!(di.frontmatter_lines.is_none());
     }
 }

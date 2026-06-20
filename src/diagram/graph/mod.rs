@@ -3,11 +3,11 @@ use std::collections::{HashMap, VecDeque};
 use super::canvas::NodeShape;
 use flowchart::{Edge, Graph, Node};
 
+pub(crate) mod class;
+pub(crate) mod er;
 pub(crate) mod flowchart;
 pub(crate) mod mindmap;
 pub(crate) mod state;
-pub(crate) mod class;
-pub(crate) mod er;
 
 #[derive(Clone)]
 pub(crate) struct NodeLayout {

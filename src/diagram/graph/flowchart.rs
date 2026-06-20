@@ -6,9 +6,9 @@ use crate::theme::Theme;
 use super::super::canvas::{Canvas, EdgeEnd, EdgeStyle, NodeShape};
 use super::super::theme::edge_color;
 use super::{
-    assign_layers, lr_edge_port_maps, lr_edge_port_y, lr_lane_counts, lr_lane_key,
-    lr_lane_mid_x, lr_layer_height, lr_node_extra_gap, lr_node_height, node_box_width,
-    node_left_x, node_right_x, order_within_layers, refine_lr_layer_order, NodeLayout,
+    NodeLayout, assign_layers, lr_edge_port_maps, lr_edge_port_y, lr_lane_counts, lr_lane_key,
+    lr_lane_mid_x, lr_layer_height, lr_node_extra_gap, lr_node_height, node_box_width, node_left_x,
+    node_right_x, order_within_layers, refine_lr_layer_order,
 };
 
 // ───── Data types ─────
@@ -542,9 +542,9 @@ pub(crate) fn render(code: &str, theme: &Theme) -> Option<(Vec<Vec<StyledSpan>>,
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use super::super::adjacent_layer_crossing_score;
     use super::super::super::render_mermaid;
+    use super::super::adjacent_layer_crossing_score;
+    use super::*;
     use crate::style::StyledSpan;
     use crate::theme::Theme;
     use std::collections::HashSet;

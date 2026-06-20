@@ -3,7 +3,7 @@ use crossterm::style::Color;
 use crate::style::StyledSpan;
 use crate::theme::Theme;
 
-use super::canvas::{Canvas, NodeShape, CONN_LEFT, CONN_RIGHT};
+use super::canvas::{CONN_LEFT, CONN_RIGHT, Canvas, NodeShape};
 use super::theme::edge_color;
 
 // ───── Sequence diagrams ─────
@@ -526,8 +526,8 @@ pub(crate) fn render(code: &str, theme: &Theme) -> Option<(Vec<Vec<StyledSpan>>,
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::render_mermaid;
+    use super::*;
     use crate::theme::Theme;
 
     fn seq_text(input: &str) -> String {

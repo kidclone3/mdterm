@@ -4,6 +4,8 @@ mod export;
 mod image;
 mod json;
 mod markdown;
+#[cfg(feature = "pos")]
+mod pos;
 mod style;
 mod theme;
 mod viewer;
@@ -50,6 +52,61 @@ struct Cli {
     /// Disable colors
     #[arg(long)]
     no_color: bool,
+
+    /// Part-of-speech highlighting (requires `pos` feature)
+    #[arg(long, num_args = 0..=1, value_name = "CATEGORIES")]
+    pos: Option<String>,
+}
+
+mod pos_cli {
+    /// Parsed `--pos` value: `None` (flag absent), `All` (`--pos` / `--pos all`),
+    /// or `Some(names)` for an explicit list.
+    #[derive(Debug)]
+    pub enum PosArg {
+        All,
+        Some(Vec<String>),
+    }
+
+    impl PosArg {
+        pub fn parse(raw: Option<&str>) -> Result<Self, String> {
+            match raw {
+                None => Ok(Self::All),
+                Some(v) => {
+                    let v = v.trim();
+                    if v.eq_ignore_ascii_case("all") || v.is_empty() {
+                        Ok(Self::All)
+                    } else {
+                        let names: Vec<String> = v
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                        if names.is_empty() {
+                            Ok(Self::All)
+                        } else {
+                            Ok(Self::Some(names))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub const VALID_CATEGORIES: [&str; 9] = [
+        "noun",
+        "verb",
+        "adjective",
+        "adverb",
+        "preposition",
+        "conjunction",
+        "determiner",
+        "pronoun",
+        "value",
+    ];
+
+    #[allow(dead_code)]
+    pub const INSTALL_HINT: &str = "POS highlighting requires: cargo install mdterm --features pos";
 }
 
 fn main() {
@@ -70,6 +127,50 @@ fn main() {
         config.width
     } else {
         0
+    };
+
+    // Resolve --pos: parse the CLI value (if any).
+    let pos_arg_parsed = match &cli.pos {
+        None => Ok(None),
+        Some(v) => {
+            pos_cli::PosArg::parse(if v.is_empty() { None } else { Some(v.as_str()) }).map(Some)
+        }
+    };
+    let pos_arg = match pos_arg_parsed {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{e}");
+            process::exit(2);
+        }
+    };
+
+    #[cfg(not(feature = "pos"))]
+    if pos_arg.is_some() {
+        eprintln!("{}", pos_cli::INSTALL_HINT);
+        process::exit(0);
+    }
+
+    // Resolve enabled + raw categories from CLI (overrides config).
+    let (pos_enabled, pos_categories): (bool, Vec<String>) = match pos_arg {
+        Some(pos_cli::PosArg::All) => (true, Vec::new()),
+        Some(pos_cli::PosArg::Some(names)) => (true, names),
+        None => (
+            config.pos.enabled,
+            config.pos.categories.clone().unwrap_or_default(),
+        ),
+    };
+
+    #[cfg(feature = "pos")]
+    let pos_set = if pos_categories.is_empty() {
+        pos::PosCategorySet::all()
+    } else {
+        match pos::PosCategorySet::from_names(&pos_categories) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{e}");
+                process::exit(2);
+            }
+        }
     };
 
     // Read content: stdin or file(s)
@@ -131,6 +232,8 @@ fn main() {
             slide_mode: cli.slides,
             line_numbers,
             width_override: if width > 0 { Some(width) } else { None },
+            pos_enabled,
+            pos_categories,
         };
         if let Err(e) = viewer::run(opts) {
             eprintln!("Viewer error: {}", e);
@@ -144,7 +247,7 @@ fn main() {
                 .map(|(c, _)| c as usize)
                 .unwrap_or(80)
         };
-        let (lines, _) = if is_json {
+        let (mut lines, doc_info) = if is_json {
             match json::render(&content, w, &initial_theme) {
                 Ok(result) => result,
                 Err(e) => {
@@ -155,11 +258,67 @@ fn main() {
         } else {
             markdown::render(&content, w, &initial_theme, line_numbers)
         };
+
+        #[cfg(feature = "pos")]
+        {
+            if pos_enabled && !is_json {
+                match pos::PosTagger::load() {
+                    Ok(tagger) => pos::apply(
+                        &mut lines,
+                        &initial_theme,
+                        &tagger,
+                        pos_set,
+                        doc_info.frontmatter_lines,
+                    ),
+                    Err(e) => eprintln!("POS disabled: {e}"),
+                }
+            }
+        }
+        #[cfg(not(feature = "pos"))]
+        {
+            let _ = &mut lines;
+            let _ = &doc_info;
+        }
+
         let wrapped = style::wrap_lines(&lines, w);
         if cli.no_color {
             viewer::print_lines_plain(&wrapped);
         } else {
             viewer::print_lines(&wrapped);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pos_cli::PosArg;
+
+    #[test]
+    fn pos_arg_absent_is_all() {
+        // `--pos` with no value -> All
+        assert!(matches!(PosArg::parse(None), Ok(PosArg::All)));
+    }
+
+    #[test]
+    fn pos_arg_explicit_all() {
+        assert!(matches!(PosArg::parse(Some("all")), Ok(PosArg::All)));
+        assert!(matches!(PosArg::parse(Some("ALL")), Ok(PosArg::All)));
+        assert!(matches!(PosArg::parse(Some("")), Ok(PosArg::All)));
+    }
+
+    #[test]
+    fn pos_arg_list() {
+        match PosArg::parse(Some("noun,verb")) {
+            Ok(PosArg::Some(v)) => assert_eq!(v, vec!["noun".to_string(), "verb".to_string()]),
+            other => panic!("expected Some list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pos_arg_list_trims_and_drops_empties() {
+        match PosArg::parse(Some(" noun , , verb ")) {
+            Ok(PosArg::Some(v)) => assert_eq!(v, vec!["noun".to_string(), "verb".to_string()]),
+            other => panic!("expected trimmed list, got {other:?}"),
         }
     }
 }
