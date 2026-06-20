@@ -10,10 +10,10 @@ pub fn to_html(content: &str, width: usize, theme: &Theme, filename: &str) {
     let (lines, _) = if filename.ends_with(".json") {
         match crate::json::render(content, width, theme) {
             Ok(result) => result,
-            Err(_) => markdown::render(content, width, theme, false, true),
+            Err(_) => markdown::render(content, width, theme, false, markdown::MermaidMode::Image),
         }
     } else {
-        markdown::render(content, width, theme, false, true)
+        markdown::render(content, width, theme, false, markdown::MermaidMode::Image)
     };
     let wrapped = wrap_lines(&lines, width);
 

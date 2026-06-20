@@ -1794,7 +1794,7 @@ pub fn render_diagram(
     cursor_path: Option<&str>,
     h_offset: usize,
 ) -> (Vec<Line>, DocumentInfo, Vec<NavItem>, usize) {
-    use crate::diagram::{Canvas, CardDrawRow};
+    use crate::diagram::{Canvas, CardDrawRow, EdgeStyle};
 
     let mut all_cards = Vec::new();
     build_graph_cards(
@@ -2025,6 +2025,7 @@ pub fn render_diagram(
                 key: r.key.clone(),
                 value_text: r.value_text.clone(),
                 value_color: r.value_color,
+                key_color: None,
                 is_connector: r.is_connector,
             })
             .collect();
@@ -2122,9 +2123,8 @@ pub fn render_diagram(
                     src_cy,
                     dst_left_x,
                     dst_cy,
-                    None,
+                    EdgeStyle::default(),
                     edge_fg,
-                    None,
                     mid_x_override,
                 );
             }

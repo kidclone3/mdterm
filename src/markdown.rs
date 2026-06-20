@@ -13,6 +13,21 @@ use crate::style::{
 };
 use crate::theme::Theme;
 
+/// How mermaid fenced code blocks should be rendered.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MermaidMode {
+    /// Always render via a mermaid.ink image. Used when the output can show
+    /// crisp images (Kitty/iTerm2/Sixel/Terminology) and for HTML export.
+    Image,
+    /// Native ASCII renderer where it's supported (flowchart, sequence); for
+    /// every other diagram type fall back to a mermaid.ink image, since a
+    /// blurry image still beats raw source. Used on the half-block protocol.
+    AsciiThenImage,
+    /// Native ASCII where supported, otherwise leave the raw mermaid source as
+    /// a code block. Used for piped/non-TTY output where images can't render.
+    AsciiThenSource,
+}
+
 struct Renderer<'a> {
     theme: &'a Theme,
     lines: Vec<Line>,
@@ -62,10 +77,9 @@ struct Renderer<'a> {
     image_url: String,
     image_alt: String,
 
-    // When true, mermaid fenced blocks are emitted as mermaid.ink image
-    // placeholders (rendered via the terminal image pipeline). When false,
-    // they fall back to the native ASCII diagram renderer / raw source.
-    mermaid_images: bool,
+    // How mermaid fenced blocks are rendered (image / ASCII-then-image /
+    // ASCII-then-source), depending on the output's image capability.
+    mermaid_mode: MermaidMode,
 
     // Document info
     code_blocks: Vec<CodeBlockContent>,
@@ -87,7 +101,7 @@ impl<'a> Renderer<'a> {
         width: usize,
         theme: &'a Theme,
         line_numbers: bool,
-        mermaid_images: bool,
+        mermaid_mode: MermaidMode,
         syntax_set: &'a SyntaxSet,
         theme_set: &'a ThemeSet,
     ) -> Self {
@@ -125,7 +139,7 @@ impl<'a> Renderer<'a> {
             in_image: false,
             image_url: String::new(),
             image_alt: String::new(),
-            mermaid_images,
+            mermaid_mode,
             code_blocks: Vec::new(),
             syntax_set,
             theme_set,
@@ -250,24 +264,44 @@ impl<'a> Renderer<'a> {
         // Check for special diagram blocks
         let is_diagram = matches!(lang.as_str(), "mermaid" | "plantuml" | "dot" | "graphviz");
 
-        // Render mermaid diagrams as a real image via a remote renderer
-        // (mermaid.ink) when image output is requested. This covers every
-        // mermaid diagram type — flowcharts, sequence, class, state, gantt,
-        // pie, er, etc. — and is displayed through mdterm's existing terminal
-        // image pipeline (Kitty / iTerm2 / Sixel / HalfBlock).
-        if lang == "mermaid" && self.mermaid_images {
-            let url = diagram::mermaid_image_url(&code, self.theme);
-            self.flush_line();
-            self.emit_image_block(&url, "mermaid diagram");
-            return;
-        }
-
-        // Try to render mermaid diagrams visually
-        if lang == "mermaid"
-            && let Some((diagram_rows, diagram_width)) = diagram::render_mermaid(&code, self.theme)
-        {
-            self.emit_diagram_block(block_id, &diagram_rows, diagram_width);
-            return;
+        // Render mermaid diagrams. Native-first dispatch: types with a native
+        // renderer (flowchart, sequence, and — after Phase B — state/class/er/
+        // mindmap) are always rendered as ASCII regardless of MermaidMode, on
+        // every terminal protocol. A parse/render failure shows a labelled
+        // error banner then falls through to the raw source block beneath. For
+        // types still pending a native renderer (is_unsupported_diagram), the
+        // MermaidMode decides between a mermaid.ink image (until Batch R
+        // removes that path) and the source block.
+        if lang == "mermaid" {
+            let native_supported = diagram::first_diagram_keyword(&code)
+                .is_none_or(|k| !diagram::is_unsupported_diagram(k));
+            if native_supported {
+                match diagram::render_mermaid(&code, self.theme) {
+                    Ok((diagram_rows, diagram_width)) => {
+                        self.emit_diagram_block(block_id, &diagram_rows, diagram_width);
+                        return;
+                    }
+                    Err(err) => {
+                        self.emit_diagram_error_block(block_id, err.reason(), &code);
+                        // fall through to the normal code-block rendering path
+                        // so the original mermaid source is shown beneath the
+                        // error banner.
+                    }
+                }
+            } else {
+                let handled = match self.mermaid_mode {
+                    MermaidMode::Image | MermaidMode::AsciiThenImage => {
+                        let url = diagram::mermaid_image_url(&code, self.theme);
+                        self.flush_line();
+                        self.emit_image_block(&url, "mermaid diagram");
+                        true
+                    }
+                    MermaidMode::AsciiThenSource => false, // render as source below
+                };
+                if handled {
+                    return;
+                }
+            }
         }
 
         let syntax = if lang.is_empty() {
@@ -540,6 +574,81 @@ impl<'a> Renderer<'a> {
                 },
             }],
             meta: LineMeta::DiagramContent { block_id },
+        });
+    }
+
+    /// Emit a compact error banner for a failed native mermaid render. The
+    /// banner is two border lines (top with a red-tinted label, bottom) with no
+    /// content rows — the diagnostic detail lives in the label and the raw
+    /// source block rendered beneath it by the caller. The width matches the
+    /// upcoming source block so the two align visually.
+    fn emit_diagram_error_block(&mut self, block_id: usize, reason: &str, code: &str) {
+        let border_fg = self.theme.code_border;
+        let error_fg = self.theme.diagram_error_fg;
+
+        let code_lines: Vec<&str> = code.lines().collect();
+        let line_num_width = if self.line_numbers {
+            code_lines.len().to_string().len()
+        } else {
+            0
+        };
+        let max_line_len = code_lines
+            .iter()
+            .map(|l| UnicodeWidthStr::width(*l))
+            .max()
+            .unwrap_or(0);
+        let content_width = (max_line_len
+            + if self.line_numbers {
+                line_num_width + 3
+            } else {
+                0
+            })
+        .max(40);
+        let inner_width = content_width + 2;
+
+        let label = format!(" mermaid (render error: {reason}) ");
+        let label_len = UnicodeWidthStr::width(label.as_str());
+        let dashes_after = inner_width.saturating_sub(1 + label_len);
+
+        // Top border with error label
+        self.lines.push(Line {
+            spans: vec![
+                StyledSpan {
+                    text: "  ╭─".to_string(),
+                    style: Style {
+                        fg: Some(border_fg),
+                        ..Default::default()
+                    },
+                },
+                StyledSpan {
+                    text: label,
+                    style: Style {
+                        fg: Some(error_fg),
+                        ..Default::default()
+                    },
+                },
+                StyledSpan {
+                    text: format!("{}╮", "─".repeat(dashes_after)),
+                    style: Style {
+                        fg: Some(border_fg),
+                        ..Default::default()
+                    },
+                },
+            ],
+            meta: LineMeta::CodeContent { block_id },
+        });
+
+        // Bottom border (no content rows — the source block beneath is the
+        // user-visible diagnostic).
+        self.lines.push(Line {
+            spans: vec![StyledSpan {
+                text: format!("  ╰{}╯", "─".repeat(inner_width)),
+                style: Style {
+                    fg: Some(border_fg),
+                    ..Default::default()
+                },
+            }],
+            meta: LineMeta::CodeContent { block_id },
         });
     }
 
@@ -1582,10 +1691,10 @@ pub fn render(
     width: usize,
     theme: &Theme,
     line_numbers: bool,
-    mermaid_images: bool,
+    mermaid_mode: MermaidMode,
 ) -> (Vec<Line>, DocumentInfo) {
     let res = SyntectRes::load();
-    render_with(input, width, theme, line_numbers, mermaid_images, &res)
+    render_with(input, width, theme, line_numbers, mermaid_mode, &res)
 }
 
 pub fn render_with(
@@ -1593,7 +1702,7 @@ pub fn render_with(
     width: usize,
     theme: &Theme,
     line_numbers: bool,
-    mermaid_images: bool,
+    mermaid_mode: MermaidMode,
     syntect_res: &SyntectRes,
 ) -> (Vec<Line>, DocumentInfo) {
     let mut renderer = Renderer::new(
@@ -1601,7 +1710,7 @@ pub fn render_with(
         width,
         theme,
         line_numbers,
-        mermaid_images,
+        mermaid_mode,
         &syntect_res.syntax_set,
         &syntect_res.theme_set,
     );
@@ -1635,7 +1744,7 @@ mod tests {
 
     fn render_test(input: &str) -> (Vec<Line>, DocumentInfo) {
         let theme = Theme::dark();
-        render(input, 80, &theme, false, false)
+        render(input, 80, &theme, false, MermaidMode::AsciiThenSource)
     }
 
     fn line_text(line: &Line) -> String {
@@ -1710,7 +1819,7 @@ mod tests {
         let theme = Theme::dark();
         let input =
             "```go\nfunc fibonacci(n int) int { return fibonacci(n-1) + fibonacci(n-2) }\n```";
-        let (lines, _) = render(input, 80, &theme, false, false);
+        let (lines, _) = render(input, 80, &theme, false, MermaidMode::AsciiThenSource);
         assert!(
             lines.iter().any(|line| line.display_width() > 20),
             "test fixture should produce a code block wider than the wrap width"
@@ -1739,7 +1848,7 @@ mod tests {
         let theme = Theme::dark();
         let input =
             "```mermaid\ngraph LR\nA[Very long start label] --> B[Very long finish label]\n```";
-        let (lines, _) = render(input, 80, &theme, false, false);
+        let (lines, _) = render(input, 80, &theme, false, MermaidMode::AsciiThenSource);
         assert!(
             lines.iter().any(|line| line.display_width() > 20),
             "test fixture should produce a diagram wider than the wrap width"
@@ -1751,6 +1860,127 @@ mod tests {
             wrapped.len(),
             lines.len(),
             "rendered Mermaid diagrams should remain horizontally pannable, not wrap"
+        );
+    }
+
+    #[test]
+    fn mermaid_ascii_then_image_uses_image_for_unsupported_types() {
+        // pie is not handled by the native ASCII renderer. On a half-block
+        // terminal (AsciiThenImage) it should still render as a mermaid.ink
+        // image rather than falling through to raw source.
+        let theme = Theme::dark();
+        let input = "```mermaid\npie\n    \"A\" : 1\n```";
+        let (lines, _) = render(input, 80, &theme, false, MermaidMode::AsciiThenImage);
+
+        let has_image = lines
+            .iter()
+            .any(|l| matches!(&l.meta, LineMeta::Image { url, .. } if url.contains("mermaid.ink")));
+        assert!(
+            has_image,
+            "pie should be emitted as a mermaid.ink image in AsciiThenImage mode"
+        );
+    }
+
+    #[test]
+    fn mermaid_ascii_then_image_still_uses_ascii_for_flowcharts() {
+        // A supported type (flowchart) must keep using the crisp ASCII renderer
+        // even in AsciiThenImage mode — it should NOT become an image.
+        let theme = Theme::dark();
+        let input = "```mermaid\ngraph LR\nA-->B\n```";
+        let (lines, _) = render(input, 80, &theme, false, MermaidMode::AsciiThenImage);
+
+        let has_ascii_diagram = lines
+            .iter()
+            .any(|l| matches!(&l.meta, LineMeta::DiagramContent { .. }));
+        let has_image = lines
+            .iter()
+            .any(|l| matches!(&l.meta, LineMeta::Image { .. }));
+        assert!(
+            has_ascii_diagram && !has_image,
+            "flowchart should use the ASCII renderer, not an image"
+        );
+    }
+
+    #[test]
+    fn mermaid_ascii_then_source_keeps_source_for_unsupported_types() {
+        // Piped output (AsciiThenSource) can't show images, so an unsupported
+        // diagram type should remain a plain source code block.
+        let theme = Theme::dark();
+        let input = "```mermaid\npie\n    \"A\" : 1\n```";
+        let (lines, _) = render(input, 80, &theme, false, MermaidMode::AsciiThenSource);
+
+        let has_image = lines
+            .iter()
+            .any(|l| matches!(&l.meta, LineMeta::Image { .. }));
+        assert!(
+            !has_image,
+            "piped output should not emit image placeholders for unsupported diagrams"
+        );
+    }
+
+    #[test]
+    fn mermaid_image_mode_uses_native_first_for_supported_types() {
+        // Native-first precedence: a flowchart renders as ASCII even on a
+        // terminal that could show images (MermaidMode::Image). Before
+        // native-first dispatch, MermaidMode::Image always emitted a
+        // mermaid.ink URL without consulting the renderer.
+        let theme = Theme::dark();
+        let input = "```mermaid\ngraph LR\nA-->B\n```";
+        let (lines, _) = render(input, 80, &theme, false, MermaidMode::Image);
+
+        let has_native = lines
+            .iter()
+            .any(|l| matches!(&l.meta, LineMeta::DiagramContent { .. }));
+        let has_image = lines
+            .iter()
+            .any(|l| matches!(&l.meta, LineMeta::Image { .. }));
+        assert!(
+            has_native && !has_image,
+            "supported types should render natively even in MermaidMode::Image"
+        );
+    }
+
+    #[test]
+    fn mermaid_parse_failure_emits_error_banner_then_source() {
+        // A supported diagram type whose body the renderer cannot parse shows
+        // a labelled error banner, then falls through to the raw source block
+        // so the user can see what went wrong.
+        let theme = Theme::dark();
+        let input = "```mermaid\ngraph TD\n~~~not valid~~~\n```";
+        let (lines, _) = render(input, 80, &theme, false, MermaidMode::AsciiThenSource);
+
+        let rendered: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            rendered.contains("render error"),
+            "expected a render-error banner, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("~~~not valid~~~"),
+            "raw mermaid source should follow the error banner"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| matches!(&l.meta, LineMeta::Image { .. })),
+            "parse failure must not emit an image"
+        );
+    }
+
+    #[test]
+    fn mermaid_unsupported_type_still_uses_image_in_image_mode() {
+        // An unported type (pie, until Batch C's chart renderers land) in
+        // MermaidMode::Image still goes through the mermaid.ink image path —
+        // native-first dispatch only applies to types with a renderer.
+        let theme = Theme::dark();
+        let input = "```mermaid\npie\n    \"A\" : 1\n```";
+        let (lines, _) = render(input, 80, &theme, false, MermaidMode::Image);
+
+        let has_image = lines
+            .iter()
+            .any(|l| matches!(&l.meta, LineMeta::Image { url, .. } if url.contains("mermaid.ink")));
+        assert!(
+            has_image,
+            "unsupported types should still fall back to a mermaid.ink image in Image mode"
         );
     }
 
@@ -1850,8 +2080,8 @@ mod tests {
     fn line_numbers_enabled_adds_numbers_in_code_blocks() {
         let theme = Theme::dark();
         let input = "```\nfirst\nsecond\nthird\n```";
-        let (lines_with, _) = render(input, 80, &theme, true, false);
-        let (lines_without, _) = render(input, 80, &theme, false, false);
+        let (lines_with, _) = render(input, 80, &theme, true, MermaidMode::AsciiThenSource);
+        let (lines_without, _) = render(input, 80, &theme, false, MermaidMode::AsciiThenSource);
         // With line numbers, code block lines should contain "1", "2", "3"
         let code_text: String = lines_with
             .iter()

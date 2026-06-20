@@ -620,7 +620,11 @@ impl ViewerState {
                     cw,
                     &self.theme,
                     self.line_numbers,
-                    self.image_cache.protocol().renders_crisp_images(),
+                    if self.image_cache.protocol().renders_crisp_images() {
+                        crate::markdown::MermaidMode::Image
+                    } else {
+                        crate::markdown::MermaidMode::AsciiThenImage
+                    },
                     &self.syntect_res,
                 )
             }
@@ -631,7 +635,11 @@ impl ViewerState {
                 cw,
                 &self.theme,
                 self.line_numbers,
-                self.image_cache.protocol().renders_crisp_images(),
+                if self.image_cache.protocol().renders_crisp_images() {
+                    crate::markdown::MermaidMode::Image
+                } else {
+                    crate::markdown::MermaidMode::AsciiThenImage
+                },
                 &self.syntect_res,
             )
         };

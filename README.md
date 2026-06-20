@@ -24,7 +24,7 @@ A terminal-based Markdown viewer written in Rust. Renders Markdown files with sy
 - **Local file links** — Click or select relative markdown links to navigate between files, with `Backspace` to go back
 - **Link picker** — Press `f` to list all links, type a number to open in browser
 - **Click-to-copy** — Click any heading section, list, or code block to copy it; `Y` copies full document, `c` copies nearest code block
-- **Mermaid diagrams** — Renders every mermaid diagram type (flowchart, sequence, class, state, gantt, pie, er, …) as a real image via [mermaid.ink](https://mermaid.ink), displayed through the terminal image pipeline (Kitty / iTerm2 / Sixel / half-block). Falls back to native ASCII box-drawing for flowcharts when offline or when stdout is piped.
+- **Mermaid diagrams** — Native ASCII rendering for `flowchart` / `graph`, `sequenceDiagram`, `stateDiagram` / `stateDiagram-v2`, `classDiagram` / `classDiagram-v2`, `erDiagram`, and `mindmap` — crisp and readable in every terminal, including the half-block fallback over SSH. Other mermaid types (gantt, pie, timeline, ...) currently fall back to a [mermaid.ink](https://mermaid.ink) image when a graphical protocol (Kitty / iTerm2 / Sixel / Terminology) is available, or to the raw source otherwise. If a native render fails, an inline `mermaid (render error: …)` banner is shown above the original source block.
 - **Math rendering** — LaTeX to Unicode: `$\alpha + \beta$` renders as `α + β`
 - **Slide mode** — `--slides` treats `---` as slide separators for terminal presentations
 - **Auto-reload** — Automatically detects file changes and reloads (via inotify/FSEvents/kqueue)

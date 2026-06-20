@@ -28,6 +28,7 @@ pub struct Theme {
     pub code_border: Color,
     pub code_label: Color,
     pub syntect_theme: &'static str,
+    pub diagram_error_fg: Color,
 
     // Inline code
     pub inline_code_fg: Color,
@@ -89,6 +90,19 @@ pub struct Theme {
     pub json_bracket: Color,
     pub json_path: Color,
     pub json_focus_bg: Color,
+
+    // classDiagram member visibility
+    pub member_plus: Color,
+    pub member_minus: Color,
+    pub member_hash: Color,
+    pub member_tilde: Color,
+
+    // stateDiagram composite state background tint
+    pub composite_state_bg: Color,
+
+    // erDiagram key badge colors
+    pub key_badge_pk: Color,
+    pub key_badge_fk: Color,
 
     is_dark: bool,
 }
@@ -190,6 +204,11 @@ impl Theme {
                 r: 108,
                 g: 112,
                 b: 134,
+            },
+            diagram_error_fg: Color::Rgb {
+                r: 237,
+                g: 105,
+                b: 97,
             },
             syntect_theme: "base16-ocean.dark",
 
@@ -377,6 +396,44 @@ impl Theme {
                 g: 42,
                 b: 54,
             },
+
+            composite_state_bg: Color::Rgb {
+                r: 30,
+                g: 32,
+                b: 38,
+            },
+
+            key_badge_pk: Color::Rgb {
+                r: 215,
+                g: 195,
+                b: 95,
+            },
+            key_badge_fk: Color::Rgb {
+                r: 95,
+                g: 155,
+                b: 235,
+            },
+
+            member_plus: Color::Rgb {
+                r: 95,
+                g: 215,
+                b: 135,
+            },
+            member_minus: Color::Rgb {
+                r: 235,
+                g: 95,
+                b: 95,
+            },
+            member_hash: Color::Rgb {
+                r: 215,
+                g: 195,
+                b: 95,
+            },
+            member_tilde: Color::Rgb {
+                r: 95,
+                g: 155,
+                b: 235,
+            },
         }
     }
 
@@ -476,6 +533,11 @@ impl Theme {
                 r: 124,
                 g: 127,
                 b: 147,
+            },
+            diagram_error_fg: Color::Rgb {
+                r: 180,
+                g: 34,
+                b: 36,
             },
             syntect_theme: "InspiredGitHub",
 
@@ -662,6 +724,44 @@ impl Theme {
                 r: 220,
                 g: 224,
                 b: 232,
+            },
+
+            composite_state_bg: Color::Rgb {
+                r: 238,
+                g: 240,
+                b: 244,
+            },
+
+            key_badge_pk: Color::Rgb {
+                r: 140,
+                g: 104,
+                b: 0,
+            },
+            key_badge_fk: Color::Rgb {
+                r: 0,
+                g: 118,
+                b: 168,
+            },
+
+            member_plus: Color::Rgb {
+                r: 0,
+                g: 115,
+                b: 73,
+            },
+            member_minus: Color::Rgb {
+                r: 203,
+                g: 36,
+                b: 49,
+            },
+            member_hash: Color::Rgb {
+                r: 140,
+                g: 104,
+                b: 0,
+            },
+            member_tilde: Color::Rgb {
+                r: 0,
+                g: 118,
+                b: 168,
             },
         }
     }
