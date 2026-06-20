@@ -1080,6 +1080,7 @@ impl<'a> Renderer<'a> {
                 let code_style = Style {
                     fg: Some(self.theme.inline_code_fg),
                     bg: Some(self.theme.inline_code_bg),
+                    code: true,
                     ..Default::default()
                 };
                 if self.in_table {
@@ -1922,5 +1923,18 @@ mod tests {
         let (_, info) = render_test(md);
         // thematic break mid-doc is not frontmatter
         assert_eq!(info.frontmatter_lines, None);
+    }
+
+    // ── Inline code ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn inline_code_span_marked_as_code() {
+        let md = "Text with `code` inside.\n";
+        let (lines, _) = render_test(md);
+        // The line containing the code span has a span whose text is "code" and code==true.
+        let found = lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.text == "code" && s.style.code));
+        assert!(found, "inline code span should have style.code == true");
     }
 }
