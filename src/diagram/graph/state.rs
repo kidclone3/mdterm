@@ -317,7 +317,29 @@ fn parse_state_diagram(code: &str) -> Option<StateDiagram> {
 
         // Notes.
         if trimmed.starts_with("note ") {
+            // Two forms: single-line `note SIDE of TARGET : text` and block
+            //   note SIDE of TARGET
+            //     body line
+            //     ...
+            //   end note
             if let Some(note) = parse_state_note(trimmed) {
+                let mut note = note;
+                if note.text.is_empty() && i < lines.len() {
+                    // Block form: collect body until `end note` (or bare `end`).
+                    let mut body: Vec<String> = Vec::new();
+                    while i < lines.len() {
+                        let blk = lines[i].trim();
+                        i += 1;
+                        if blk == "end note" || blk == "end" {
+                            break;
+                        }
+                        if blk.is_empty() {
+                            continue;
+                        }
+                        body.push(blk.to_string());
+                    }
+                    note.text = body.join("\n");
+                }
                 register_state(
                     &mut nodes,
                     &mut node_order,
@@ -744,6 +766,37 @@ mod tests {
         assert_eq!(d.notes[0].text, "hello");
         assert_eq!(d.notes[1].side, NoteSide::Right);
         assert_eq!(d.notes[1].text, "world");
+    }
+
+    #[test]
+    fn parses_multiline_note_block() {
+        let src = "stateDiagram-v2\n[*] --> Paid\nnote right of Paid\n    Funds captured\n    by the gateway\nend note\nPaid --> [*]";
+        let d = parse_state_diagram(src).unwrap();
+        assert_eq!(d.notes.len(), 1, "exactly one note, got: {:?}", d.notes);
+        assert_eq!(d.notes[0].target, "Paid");
+        assert_eq!(d.notes[0].side, NoteSide::Right);
+        assert_eq!(
+            d.notes[0].text,
+            "Funds captured\nby the gateway",
+            "block body should join trimmed lines with \\n"
+        );
+        for forbidden in ["Funds", "captured", "gateway", "end", "note"] {
+            assert!(
+                !d.nodes.contains_key(forbidden),
+                "lexeme `{forbidden}` leaked into nodes: {:?}",
+                d.nodes.keys().collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn parses_note_block_then_transition() {
+        let src = "stateDiagram-v2\n[*] --> A\nnote right of A\n  body line\nend note\nA --> B";
+        let d = parse_state_diagram(src).unwrap();
+        assert_eq!(d.notes.len(), 1);
+        assert_eq!(d.notes[0].text, "body line");
+        assert_eq!(d.edges.len(), 2, "parser should resume after the note block");
+        assert!(d.nodes.contains_key("B"));
     }
 
     #[test]
