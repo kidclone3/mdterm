@@ -1622,6 +1622,7 @@ pub fn render_with(
 
     let doc_info = DocumentInfo {
         code_blocks: renderer.code_blocks,
+        frontmatter_lines: None,
     };
 
     (renderer.lines, doc_info)

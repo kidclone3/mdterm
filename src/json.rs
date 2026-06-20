@@ -27,6 +27,7 @@ pub fn render(
         renderer.lines,
         DocumentInfo {
             code_blocks: Vec::<CodeBlockContent>::new(),
+            frontmatter_lines: None,
         },
     ))
 }
@@ -928,6 +929,7 @@ pub fn render_interactive(
         r.lines,
         DocumentInfo {
             code_blocks: Vec::new(),
+            frontmatter_lines: None,
         },
         r.navigable,
     )
@@ -1813,6 +1815,7 @@ pub fn render_diagram(
             Vec::new(),
             DocumentInfo {
                 code_blocks: Vec::new(),
+                frontmatter_lines: None,
             },
             Vec::new(),
             0,
@@ -1859,6 +1862,7 @@ pub fn render_diagram(
             Vec::new(),
             DocumentInfo {
                 code_blocks: Vec::new(),
+                frontmatter_lines: None,
             },
             Vec::new(),
             0,
@@ -2215,6 +2219,7 @@ pub fn render_diagram(
         lines,
         DocumentInfo {
             code_blocks: Vec::new(),
+            frontmatter_lines: None,
         },
         navigable,
         canvas_width,
