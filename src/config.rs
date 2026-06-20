@@ -10,6 +10,28 @@ pub struct Config {
     pub line_numbers: bool,
     #[serde(default)]
     pub width: usize,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub pos: PosConfig,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct PosConfig {
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub enabled: bool,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub categories: Option<Vec<String>>,
+}
+
+impl Default for PosConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            categories: None,
+        }
+    }
 }
 
 fn default_theme() -> String {
@@ -22,6 +44,7 @@ impl Default for Config {
             theme: default_theme(),
             line_numbers: false,
             width: 0,
+            pos: PosConfig::default(),
         }
     }
 }
@@ -40,4 +63,39 @@ impl Config {
 
 fn config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("mdterm").join("config.toml"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_pos_is_disabled_and_all_categories() {
+        let c = Config::default();
+        assert!(!c.pos.enabled);
+        assert!(c.pos.categories.is_none());
+    }
+
+    #[test]
+    fn parse_pos_enabled_with_categories() {
+        let toml = r#"
+[pos]
+enabled = true
+categories = ["noun", "verb"]
+"#;
+        let c: Config = toml::from_str(toml).unwrap();
+        assert!(c.pos.enabled);
+        assert_eq!(
+            c.pos.categories.as_deref(),
+            Some(&["noun".to_string(), "verb".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn parse_pos_enabled_only_defaults_categories_none() {
+        let toml = "[pos]\nenabled = true\n";
+        let c: Config = toml::from_str(toml).unwrap();
+        assert!(c.pos.enabled);
+        assert!(c.pos.categories.is_none());
+    }
 }
