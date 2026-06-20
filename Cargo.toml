@@ -30,3 +30,7 @@ flate2 = { version = "1", optional = true }
 
 [features]
 pos = ["dep:flate2"]
+
+[[example]]
+name = "convert_pos_model"
+required-features = ["pos"]
