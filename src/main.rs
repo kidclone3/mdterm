@@ -163,6 +163,19 @@ fn main() {
         ),
     };
 
+    #[cfg(feature = "pos")]
+    let pos_set = if pos_categories.is_empty() {
+        pos::PosCategorySet::all()
+    } else {
+        match pos::PosCategorySet::from_names(&pos_categories) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{e}");
+                process::exit(2);
+            }
+        }
+    };
+
     // Read content: stdin or file(s)
     let (content, filename) = if cli.files.is_empty() {
         if io::stdin().is_terminal() {
@@ -237,7 +250,7 @@ fn main() {
                 .map(|(c, _)| c as usize)
                 .unwrap_or(80)
         };
-        let (lines, _) = if is_json {
+        let (mut lines, doc_info) = if is_json {
             match json::render(&content, w, &initial_theme) {
                 Ok(result) => result,
                 Err(e) => {
@@ -248,6 +261,26 @@ fn main() {
         } else {
             markdown::render(&content, w, &initial_theme, line_numbers, false)
         };
+
+        #[cfg(feature = "pos")]
+        {
+            if pos_enabled && !is_json {
+                let tagger = pos::PosTagger::load();
+                pos::apply(
+                    &mut lines,
+                    &initial_theme,
+                    &tagger,
+                    pos_set,
+                    doc_info.frontmatter_lines,
+                );
+            }
+        }
+        #[cfg(not(feature = "pos"))]
+        {
+            let _ = &mut lines;
+            let _ = &doc_info;
+        }
+
         let wrapped = style::wrap_lines(&lines, w);
         if cli.no_color {
             viewer::print_lines_plain(&wrapped);
