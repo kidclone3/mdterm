@@ -34,6 +34,10 @@ pub struct ViewerOptions {
     pub slide_mode: bool,
     pub line_numbers: bool,
     pub width_override: Option<usize>,
+    #[allow(dead_code)]
+    pub pos_enabled: bool,
+    #[allow(dead_code)]
+    pub pos_categories: Vec<String>,
 }
 
 pub fn run(opts: ViewerOptions) -> io::Result<()> {
@@ -4635,6 +4639,8 @@ mod tests {
             slide_mode: false,
             line_numbers: false,
             width_override: None,
+            pos_enabled: false,
+            pos_categories: Vec::new(),
         };
         let mut state = ViewerState::new(opts, 80, 24);
         state.wrapped = lines;

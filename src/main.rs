@@ -52,6 +52,63 @@ struct Cli {
     /// Disable colors
     #[arg(long)]
     no_color: bool,
+
+    /// Part-of-speech highlighting (requires `pos` feature)
+    #[arg(long, num_args = 0..=1, value_name = "CATEGORIES")]
+    pos: Option<String>,
+}
+
+mod pos_cli {
+    /// Parsed `--pos` value: `None` (flag absent), `All` (`--pos` / `--pos all`),
+    /// or `Some(names)` for an explicit list.
+    #[derive(Debug)]
+    pub enum PosArg {
+        #[allow(dead_code)]
+        Absent,
+        All,
+        Some(Vec<String>),
+    }
+
+    impl PosArg {
+        pub fn parse(raw: Option<&str>) -> Result<Self, String> {
+            match raw {
+                None => Ok(Self::All),
+                Some(v) => {
+                    let v = v.trim();
+                    if v.eq_ignore_ascii_case("all") || v.is_empty() {
+                        Ok(Self::All)
+                    } else {
+                        let names: Vec<String> = v
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                        if names.is_empty() {
+                            Ok(Self::All)
+                        } else {
+                            Ok(Self::Some(names))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub const VALID_CATEGORIES: [&str; 9] = [
+        "noun",
+        "verb",
+        "adjective",
+        "adverb",
+        "preposition",
+        "conjunction",
+        "determiner",
+        "pronoun",
+        "value",
+    ];
+
+    #[allow(dead_code)]
+    pub const INSTALL_HINT: &str = "POS highlighting requires: cargo install mdterm --features pos";
 }
 
 fn main() {
@@ -72,6 +129,38 @@ fn main() {
         config.width
     } else {
         0
+    };
+
+    // Resolve --pos: parse the CLI value (if any).
+    let pos_arg_parsed = match &cli.pos {
+        None => Ok(None),
+        Some(v) => {
+            pos_cli::PosArg::parse(if v.is_empty() { None } else { Some(v.as_str()) }).map(Some)
+        }
+    };
+    let pos_arg = match pos_arg_parsed {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{e}");
+            process::exit(2);
+        }
+    };
+
+    #[cfg(not(feature = "pos"))]
+    if pos_arg.is_some() {
+        eprintln!("{}", pos_cli::INSTALL_HINT);
+        process::exit(0);
+    }
+
+    // Resolve enabled + raw categories from CLI (overrides config).
+    let (pos_enabled, pos_categories): (bool, Vec<String>) = match pos_arg {
+        Some(pos_cli::PosArg::All) => (true, Vec::new()),
+        Some(pos_cli::PosArg::Some(names)) => (true, names),
+        Some(pos_cli::PosArg::Absent) => unreachable!(),
+        None => (
+            config.pos.enabled,
+            config.pos.categories.clone().unwrap_or_default(),
+        ),
     };
 
     // Read content: stdin or file(s)
@@ -133,6 +222,8 @@ fn main() {
             slide_mode: cli.slides,
             line_numbers,
             width_override: if width > 0 { Some(width) } else { None },
+            pos_enabled,
+            pos_categories,
         };
         if let Err(e) = viewer::run(opts) {
             eprintln!("Viewer error: {}", e);
@@ -162,6 +253,40 @@ fn main() {
             viewer::print_lines_plain(&wrapped);
         } else {
             viewer::print_lines(&wrapped);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pos_cli::PosArg;
+
+    #[test]
+    fn pos_arg_absent_is_all() {
+        // `--pos` with no value -> All
+        assert!(matches!(PosArg::parse(None), Ok(PosArg::All)));
+    }
+
+    #[test]
+    fn pos_arg_explicit_all() {
+        assert!(matches!(PosArg::parse(Some("all")), Ok(PosArg::All)));
+        assert!(matches!(PosArg::parse(Some("ALL")), Ok(PosArg::All)));
+        assert!(matches!(PosArg::parse(Some("")), Ok(PosArg::All)));
+    }
+
+    #[test]
+    fn pos_arg_list() {
+        match PosArg::parse(Some("noun,verb")) {
+            Ok(PosArg::Some(v)) => assert_eq!(v, vec!["noun".to_string(), "verb".to_string()]),
+            other => panic!("expected Some list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pos_arg_list_trims_and_drops_empties() {
+        match PosArg::parse(Some(" noun , , verb ")) {
+            Ok(PosArg::Some(v)) => assert_eq!(v, vec!["noun".to_string(), "verb".to_string()]),
+            other => panic!("expected trimmed list, got {other:?}"),
         }
     }
 }
