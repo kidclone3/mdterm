@@ -2,6 +2,23 @@ use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;
 
+fn deserialize_categories<'de, D>(d: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Cat {
+        List(Vec<String>),
+        Single(String),
+    }
+    match Option::deserialize(d)? {
+        Some(Cat::List(v)) => Ok(Some(v)),
+        Some(Cat::Single(s)) => Ok(Some(vec![s])),
+        None => Ok(None),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct Config {
     #[serde(default = "default_theme")]
@@ -15,23 +32,14 @@ pub struct Config {
     pub pos: PosConfig,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, Default)]
 pub struct PosConfig {
     #[serde(default)]
     #[allow(dead_code)]
     pub enabled: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_categories")]
     #[allow(dead_code)]
     pub categories: Option<Vec<String>>,
-}
-
-impl Default for PosConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            categories: None,
-        }
-    }
 }
 
 fn default_theme() -> String {
@@ -97,5 +105,24 @@ categories = ["noun", "verb"]
         let c: Config = toml::from_str(toml).unwrap();
         assert!(c.pos.enabled);
         assert!(c.pos.categories.is_none());
+    }
+
+    #[test]
+    fn parse_pos_scalar_categories_does_not_destroy_config() {
+        let toml =
+            "theme = \"light\"\nline_numbers = true\n[pos]\nenabled = true\ncategories = \"all\"\n";
+        let c: Config = toml::from_str(toml).unwrap();
+        assert!(c.pos.enabled);
+        assert_eq!(c.pos.categories, Some(vec!["all".to_string()]));
+        // Rest of config survives (the silent-config-loss bug is fixed).
+        assert_eq!(c.theme, "light");
+        assert!(c.line_numbers);
+    }
+
+    #[test]
+    fn parse_pos_scalar_single_category() {
+        let toml = "[pos]\ncategories = \"noun\"\n";
+        let c: Config = toml::from_str(toml).unwrap();
+        assert_eq!(c.pos.categories, Some(vec!["noun".to_string()]));
     }
 }

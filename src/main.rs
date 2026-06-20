@@ -63,8 +63,6 @@ mod pos_cli {
     /// or `Some(names)` for an explicit list.
     #[derive(Debug)]
     pub enum PosArg {
-        #[allow(dead_code)]
-        Absent,
         All,
         Some(Vec<String>),
     }
@@ -156,7 +154,6 @@ fn main() {
     let (pos_enabled, pos_categories): (bool, Vec<String>) = match pos_arg {
         Some(pos_cli::PosArg::All) => (true, Vec::new()),
         Some(pos_cli::PosArg::Some(names)) => (true, names),
-        Some(pos_cli::PosArg::Absent) => unreachable!(),
         None => (
             config.pos.enabled,
             config.pos.categories.clone().unwrap_or_default(),
@@ -265,14 +262,16 @@ fn main() {
         #[cfg(feature = "pos")]
         {
             if pos_enabled && !is_json {
-                let tagger = pos::PosTagger::load();
-                pos::apply(
-                    &mut lines,
-                    &initial_theme,
-                    &tagger,
-                    pos_set,
-                    doc_info.frontmatter_lines,
-                );
+                match pos::PosTagger::load() {
+                    Ok(tagger) => pos::apply(
+                        &mut lines,
+                        &initial_theme,
+                        &tagger,
+                        pos_set,
+                        doc_info.frontmatter_lines,
+                    ),
+                    Err(e) => eprintln!("POS disabled: {e}"),
+                }
             }
         }
         #[cfg(not(feature = "pos"))]

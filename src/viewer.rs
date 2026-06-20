@@ -686,7 +686,13 @@ impl ViewerState {
         #[cfg(feature = "pos")]
         if self.pos_enabled && self.json_view.is_none() {
             if self.pos_tagger.is_none() {
-                self.pos_tagger = Some(crate::pos::PosTagger::load());
+                match crate::pos::PosTagger::load() {
+                    Ok(tagger) => self.pos_tagger = Some(tagger),
+                    Err(e) => {
+                        self.pos_enabled = false;
+                        self.set_toast(format!("POS disabled: {e}"));
+                    }
+                }
             }
             if let Some(tagger) = &self.pos_tagger {
                 crate::pos::apply(

@@ -4,11 +4,6 @@
 //! word-spans by their part of speech using a vendored averaged-perceptron
 //! tagger (ported from `postagger`) and NLTK's pretrained model.
 
-// `apply()` is the public entry point consumed by Tasks 13/14 (render pipeline).
-// Until those land, the binary crate's dead-code analysis flags the whole module
-// surface (apply itself, PosTagger, tokenize_spans, etc.). Silence until wired up.
-#![allow(dead_code)]
-
 /// The 9 part-of-speech color categories mdterm distinguishes.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum PosCategory {
@@ -108,11 +103,11 @@ pub fn pt_tag_to_category(tag: &str) -> Option<PosCategory> {
         "NN" | "NNS" | "NNP" | "NNPS" => PosCategory::Noun,
         "VB" | "VBD" | "VBG" | "VBN" | "VBP" | "VBZ" | "MD" => PosCategory::Verb,
         "JJ" | "JJR" | "JJS" => PosCategory::Adjective,
-        "RB" | "RBR" | "RBS" | "RP" => PosCategory::Adverb,
+        "RB" | "RBR" | "RBS" | "RP" | "WRB" => PosCategory::Adverb,
         "IN" | "TO" => PosCategory::Preposition,
         "CC" => PosCategory::Conjunction,
         "DT" | "PDT" | "EX" | "POS" | "WDT" => PosCategory::Determiner,
-        "PRP" | "PRP$" | "WP" | "WP$" | "WRB" => PosCategory::Pronoun,
+        "PRP" | "PRP$" | "WP" | "WP$" => PosCategory::Pronoun,
         "CD" => PosCategory::Value,
         _ => return None,
     };
@@ -134,10 +129,10 @@ struct AveragedPerceptron {
 }
 
 impl AveragedPerceptron {
-    fn from_embedded() -> Self {
+    fn from_embedded() -> Result<Self, String> {
         let decoder = GzDecoder::new(WEIGHTS_GZ);
         let parsed: HashMap<String, HashMap<String, f64>> =
-            serde_json::from_reader(decoder).expect("parse weights.json.gz");
+            serde_json::from_reader(decoder).map_err(|e| format!("parse weights.json.gz: {e}"))?;
         let feature_weights: HashMap<String, HashMap<String, f32>> = parsed
             .into_iter()
             .map(|(feat, inner)| {
@@ -154,10 +149,10 @@ impl AveragedPerceptron {
             .filter(|c| !c.is_empty())
             .collect();
 
-        Self {
+        Ok(Self {
             feature_weights,
             classes,
-        }
+        })
     }
 
     fn predict(&self, features: &HashMap<String, usize>) -> (&str, f32) {
@@ -208,13 +203,13 @@ pub struct PosTagger {
 
 impl PosTagger {
     /// Parse the embedded gzip-JSON model. Call once and cache.
-    pub fn load() -> Self {
+    pub fn load() -> Result<Self, String> {
         let tags: HashMap<String, String> =
-            serde_json::from_str(TAGS_JSON).expect("parse tags.json");
-        Self {
-            model: AveragedPerceptron::from_embedded(),
+            serde_json::from_str(TAGS_JSON).map_err(|e| format!("parse tags.json: {e}"))?;
+        Ok(Self {
+            model: AveragedPerceptron::from_embedded()?,
             tags,
-        }
+        })
     }
 
     /// Tag a whitespace-separated sentence.
@@ -543,7 +538,7 @@ mod tests {
     #[test]
     fn apply_colors_noun_and_verb_differently() {
         let theme = Theme::dark();
-        let tagger = PosTagger::load();
+        let tagger = PosTagger::load().expect("load");
         let mut lines = vec![plain_line("the fox runs quickly")];
         apply(&mut lines, &theme, &tagger, PosCategorySet::all(), None);
         // At least two distinct foregrounds appear among the word spans.
@@ -559,7 +554,7 @@ mod tests {
     #[test]
     fn apply_preserves_bold_attribute() {
         let theme = Theme::dark();
-        let tagger = PosTagger::load();
+        let tagger = PosTagger::load().expect("load");
         let mut lines = vec![Line {
             spans: vec![StyledSpan {
                 text: "the fox runs".to_string(),
@@ -580,7 +575,7 @@ mod tests {
     #[test]
     fn apply_skips_inline_code_spans() {
         let theme = Theme::dark();
-        let tagger = PosTagger::load();
+        let tagger = PosTagger::load().expect("load");
         let code_color = theme.inline_code_fg;
         let mut lines = vec![Line {
             spans: vec![StyledSpan {
@@ -601,7 +596,7 @@ mod tests {
     #[test]
     fn apply_skips_link_spans() {
         let theme = Theme::dark();
-        let tagger = PosTagger::load();
+        let tagger = PosTagger::load().expect("load");
         let link_color = theme.link;
         let mut lines = vec![Line {
             spans: vec![StyledSpan {
@@ -621,7 +616,7 @@ mod tests {
     #[test]
     fn apply_skips_code_block_lines() {
         let theme = Theme::dark();
-        let tagger = PosTagger::load();
+        let tagger = PosTagger::load().expect("load");
         let before = "let x = 1;".to_string();
         let mut lines = vec![Line {
             spans: vec![StyledSpan {
@@ -640,7 +635,7 @@ mod tests {
     #[test]
     fn apply_skips_frontmatter_lines() {
         let theme = Theme::dark();
-        let tagger = PosTagger::load();
+        let tagger = PosTagger::load().expect("load");
         let mut lines = vec![
             plain_line("title: Hello"), // index 0 — frontmatter
             plain_line("the fox runs"), // index 1 — real prose
@@ -654,7 +649,7 @@ mod tests {
     #[test]
     fn apply_respects_category_subset() {
         let theme = Theme::dark();
-        let tagger = PosTagger::load();
+        let tagger = PosTagger::load().expect("load");
         let only_nouns = PosCategorySet::from_names(&["noun".to_string()]).unwrap();
         let mut lines = vec![plain_line("the fox runs quickly")];
         apply(&mut lines, &theme, &tagger, only_nouns, None);
@@ -735,6 +730,7 @@ mod tests {
         assert_eq!(pt_tag_to_category("RBR"), Some(PosCategory::Adverb));
         assert_eq!(pt_tag_to_category("RBS"), Some(PosCategory::Adverb));
         assert_eq!(pt_tag_to_category("RP"), Some(PosCategory::Adverb));
+        assert_eq!(pt_tag_to_category("WRB"), Some(PosCategory::Adverb));
         assert_eq!(pt_tag_to_category("IN"), Some(PosCategory::Preposition));
         assert_eq!(pt_tag_to_category("TO"), Some(PosCategory::Preposition));
         assert_eq!(pt_tag_to_category("CC"), Some(PosCategory::Conjunction));
@@ -746,6 +742,7 @@ mod tests {
         assert_eq!(pt_tag_to_category("PDT"), Some(PosCategory::Determiner));
         assert_eq!(pt_tag_to_category("EX"), Some(PosCategory::Determiner));
         assert_eq!(pt_tag_to_category("POS"), Some(PosCategory::Determiner));
+        assert_eq!(pt_tag_to_category("WDT"), Some(PosCategory::Determiner));
         assert_eq!(pt_tag_to_category("PRP"), Some(PosCategory::Pronoun));
         assert_eq!(pt_tag_to_category("PRP$"), Some(PosCategory::Pronoun));
         assert_eq!(pt_tag_to_category("WP"), Some(PosCategory::Pronoun));
@@ -786,12 +783,12 @@ mod tests {
 
     #[test]
     fn tagger_loads_from_embedded_model() {
-        let _t = PosTagger::load();
+        assert!(PosTagger::load().is_ok());
     }
 
     #[test]
     fn tagger_tags_known_sentence() {
-        let t = PosTagger::load();
+        let t = PosTagger::load().expect("load");
         let tags = t.tag("the quick brown fox jumps over the lazy dog");
         let words: Vec<&str> = tags.iter().map(|x| x.word.as_str()).collect();
         assert_eq!(
