@@ -673,7 +673,13 @@ fn render_state_canvas(diagram: &StateDiagram, theme: &Theme) -> Option<(Canvas,
                         text_fg,
                         comp_bg,
                     );
-                    canvas.stamp_canvas(inner_canvas, left_x + 2, node_y + 2);
+                    canvas.stamp_canvas_clipped(
+                        inner_canvas,
+                        left_x + 2,
+                        node_y + 2,
+                        w.saturating_sub(4),
+                        h.saturating_sub(3),
+                    );
                 } else {
                     let label = sn.display_label();
                     let shape = sn.shape();
@@ -1074,5 +1080,44 @@ mod tests {
             arrow_rows,
             top_row_idx
         );
+    }
+
+    #[test]
+    fn composite_inner_clipped_to_bounds() {
+        // Force the inner diagram to be wider than the composite's interior
+        // would naturally allow (long inner state name + nested edge label),
+        // then assert nothing bleeds outside the composite's column range.
+        let rows = render_to_text(
+            "stateDiagram-v2\n[*] --> C\nstate C {\n  [*] --> InnerWithLongName\n  InnerWithLongName --> [*] : a_long_inner_event\n}\nC --> [*]",
+        );
+        // Find the composite's outer rectangle column range by locating the
+        // top-border corners \u{256d} (top-left) and \u{256e} (top-right).
+        let top_idx = rows
+            .iter()
+            .position(|r| r.contains('C') && r.contains('\u{256d}'))
+            .expect("composite top border row");
+        let top_row = &rows[top_idx];
+        let tl = top_row.find('\u{256d}').expect("top-left corner");
+        let tr = top_row.rfind('\u{256e}').expect("top-right corner");
+        // For every row that lies inside the composite's vertical span, no
+        // non-space glyph may appear outside [tl, tr].
+        for (row_off, row) in rows.iter().enumerate().skip(top_idx) {
+            // Stop at the bottom border \u{2570}.
+            if row.contains('\u{2570}') {
+                break;
+            }
+            for (col, ch) in row.char_indices() {
+                if col < tl || col > tr {
+                    // Allow the canvas's own outer border column and pure whitespace.
+                    if ch != ' ' && ch != '\u{2502}' {
+                        // Tolerate only the outer "mermaid (diagram)" panel border.
+                        assert!(
+                            col <= 2 || row.matches('\u{2502}').count() >= 2,
+                            "row {row_off} col {col} leaks glyph `{ch}` outside composite bounds [.., {tl}..{tr}]:\n{row}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

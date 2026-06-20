@@ -491,15 +491,25 @@ impl Canvas {
         self.set_node_bg(left_x + width - 1, bot_y, '╯', border_fg, bg);
     }
 
-    /// Copy another canvas's non-empty cells into this one at offset (dx, dy).
-    /// Used to embed a sub-canvas (composite state's inner graph) inside the
-    /// parent canvas region already painted by `draw_composite_outer`.
-    pub(crate) fn stamp_canvas(&mut self, other: &Canvas, dx: usize, dy: usize) {
-        for y in 0..other.height {
+    /// Like `stamp_canvas`, but refuses to write any cell outside the
+    /// rectangle `[dx, dx + max_w) × [dy, dy + max_h)`. Used to embed a
+    /// composite state's inner canvas with a hard bound so an oversize inner
+    /// render cannot corrupt neighbouring layers.
+    pub(crate) fn stamp_canvas_clipped(
+        &mut self,
+        other: &Canvas,
+        dx: usize,
+        dy: usize,
+        max_w: usize,
+        max_h: usize,
+    ) {
+        let x_limit = max_w.min(other.width);
+        let y_limit = max_h.min(other.height);
+        for y in 0..y_limit {
             if dy + y >= self.height {
                 break;
             }
-            for x in 0..other.width {
+            for x in 0..x_limit {
                 if dx + x >= self.width {
                     break;
                 }
