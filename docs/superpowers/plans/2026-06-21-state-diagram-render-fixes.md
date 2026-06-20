@@ -571,127 +571,15 @@ vertical arrow can't reach a neighbour's box border."
 
 ---
 
-### Task 4: Per-inter-layer vertical gap from crossing labels (Piece A)
+### Task 4: Per-inter-layer vertical gap from crossing labels (Piece A) — DROPPED
 
-**Files:**
-- Modify: `src/diagram/graph/state.rs:487` (edge_gap constant), `:500-512` (total_height), `:591` (y advancement)
-
-**Interfaces:**
-- Consumes: `diagram.edges`, `layers`
-- Produces: a `layer_gaps: Vec<usize>` parallel to the layers, summed into `total_height` and applied per-layer.
-
-- [ ] **Step 1: Write the failing test**
-
-Add to `src/diagram/graph/state.rs` `mod tests`:
-
-```rust
-#[test]
-fn layer_gap_grows_with_edge_label_length() {
-    // A long-label edge between layers 1 and 2 should produce a gap >= 7
-    // (label_len + 2 = 8, more than the floor of 4). We assert it indirectly
-    // by counting blank rows between the source and destination boxes.
-    let rows = render_to_text(
-        "stateDiagram-v2\n[*] --> A\nA --> B : quite_a_long_event\nB --> [*]",
-    );
-    let all: String = rows.join("\n");
-    // Source label appears, dest label appears, and crucially the label
-    // itself fits beside the arrow without overwriting B's top border.
-    assert!(all.contains("quite_a_long_event"));
-    assert!(all.contains('B'));
-    // B's rounded top-border corner must appear AFTER the label row, not on it.
-    let label_row = rows.iter().position(|r| r.contains("quite_a_long_event")).unwrap();
-    let b_top_row = rows
-        .iter()
-        .position(|r| r.contains('\u{256d}') && r.contains('B'))
-        .or_else(|| rows.iter().position(|r| r.contains('B')));
-    assert!(
-        b_top_row.map(|r| r > label_row).unwrap_or(true),
-        "B's box must start below the label row, got rows {} vs {}",
-        label_row,
-        b_top_row.unwrap_or(0)
-    );
-}
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `cargo test --lib state::tests::layer_gap_grows_with_edge_label_length`
-Expected: may PASS already (the flat 4-row gap happens to place B below the label row in this minimal case) or FAIL (depending on whether the label is wide enough to wrap into the next row). If it passes, weaken the assertion to require the gap to be at least `max(4, label_len + 2)` by counting blank rows. If the test already passes, keep it as a regression guard and proceed — the implementation is still warranted for the symmetric invariant.
-
-- [ ] **Step 3: Write minimal implementation**
-
-Add a helper (next to `layer_down_edge_label_max`):
-
-```rust
-/// Same as layer_down_edge_label_max but returns the value to use as the
-/// inter-layer vertical gap: `max(4, longest_label + 2)`. Per-gap rather
-/// than global so unrelated layers stay compact.
-fn layer_gap_size(
-    diagram: &StateDiagram,
-    layers: &[Vec<String>],
-    layer_idx: usize,
-) -> usize {
-    layer_down_edge_label_max(diagram, layers, layer_idx)
-        .saturating_add(2)
-        .max(4)
-}
-```
-
-In `render_state_canvas`, remove `let edge_gap = 4;` at state.rs:487. Compute `layer_gaps` alongside `layer_h_gaps`:
-
-```rust
-    let layer_gaps: Vec<usize> = (0..layers.len().saturating_sub(1))
-        .map(|i| layer_gap_size(diagram, &layers, i))
-        .collect();
-```
-
-Replace `total_height` (state.rs:511-512):
-
-```rust
-    let total_height: usize =
-        layer_heights.iter().sum::<usize>() + layers.len().saturating_sub(1) * edge_gap;
-```
-
-with:
-
-```rust
-    let total_height: usize =
-        layer_heights.iter().sum::<usize>() + layer_gaps.iter().sum::<usize>();
-```
-
-Replace the y-advancement at state.rs:591:
-
-```rust
-        y += layer_height + edge_gap;
-```
-
-with:
-
-```rust
-        let gap = if layer_idx + 1 < layer_gaps.len() {
-            layer_gaps[layer_idx]
-        } else {
-            0
-        };
-        y += layer_height + gap;
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `cargo test --lib state::tests`
-Expected: PASS — all state-diagram tests green.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/diagram/graph/state.rs
-git commit -m "fix(mermaid/state): reserve per-inter-layer vertical gap from labels
-
-Replace flat edge_gap=4 with per-gap values sized from the longest
-label among edges crossing that gap. Symmetric invariant to the
-horizontal h_gap reservation; future-proofs against multi-row label
-wrapping and far_label placement on TD edges."
-```
+**Status:** Dropped during execution. Piece A's test surfaced a real but
+**different** bug (single-column long labels silently truncated at the canvas
+right edge), not the vertical-gap issue it was meant to future-proof against.
+The actual demo bug 3 is fully covered by Tasks 3 (h_gap reservation) and 6
+(inner-canvas clipping). Per the executing-plans skill's "fundamental
+approach needs rethinking" clause and user confirmation, Task 4 is removed.
+The unrelated canvas-width-truncation bug it surfaced is noted as future work.
 
 ---
 

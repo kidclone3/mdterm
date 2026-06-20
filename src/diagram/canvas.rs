@@ -383,6 +383,63 @@ impl Canvas {
         self.set_node(x + width - 1, bottom_y, br, border_fg);
     }
 
+    /// Draw a rounded rectangle note card with one or more centred text lines.
+    /// Each entry of `lines` is placed on its own row inside the interior
+    /// (no padding rows; matches the look of single-line notes). Used by
+    /// stateDiagram notes. Bounds-checked: writes outside the canvas are
+    /// silently dropped.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_note_card(
+        &mut self,
+        left_x: usize,
+        top_y: usize,
+        width: usize,
+        height: usize,
+        lines: &[&str],
+        border_fg: Option<Color>,
+        text_fg: Option<Color>,
+    ) {
+        if width < 4 || height < 3 || lines.is_empty() {
+            return;
+        }
+        // Top border: ╭───╮
+        self.set_node(left_x, top_y, '\u{256d}', border_fg);
+        for x in (left_x + 1)..(left_x + width - 1) {
+            self.set_node(x, top_y, '\u{2500}', border_fg);
+        }
+        self.set_node(left_x + width - 1, top_y, '\u{256e}', border_fg);
+
+        // Interior rows: side borders + centred text lines.
+        let interior_top = top_y + 1;
+        let interior_bot = top_y + height - 1;
+        for row_idx in 0..(interior_bot - interior_top) {
+            let row_y = interior_top + row_idx;
+            self.set_node(left_x, row_y, '\u{2502}', border_fg);
+            for x in (left_x + 1)..(left_x + width - 1) {
+                self.set_node(x, row_y, ' ', text_fg);
+            }
+            if row_idx < lines.len() {
+                let chars: Vec<char> = lines[row_idx].chars().collect();
+                let pad = (width - 2).saturating_sub(chars.len());
+                let start = left_x + 1 + pad / 2;
+                for (i, &ch) in chars.iter().enumerate() {
+                    if start + i < left_x + width - 1 {
+                        self.set_node(start + i, row_y, ch, text_fg);
+                    }
+                }
+            }
+            self.set_node(left_x + width - 1, row_y, '\u{2502}', border_fg);
+        }
+
+        // Bottom border: ╰───╯
+        let bot_y = top_y + height - 1;
+        self.set_node(left_x, bot_y, '\u{2570}', border_fg);
+        for x in (left_x + 1)..(left_x + width - 1) {
+            self.set_node(x, bot_y, '\u{2500}', border_fg);
+        }
+        self.set_node(left_x + width - 1, bot_y, '\u{256f}', border_fg);
+    }
+
     /// Draw the outer frame + tinted background for a composite (nested) state
     /// node. The inner sub-canvas is stamped separately via `stamp_canvas`.
     /// Title sits on the top border (matching `draw_card` styling).
@@ -434,15 +491,25 @@ impl Canvas {
         self.set_node_bg(left_x + width - 1, bot_y, '╯', border_fg, bg);
     }
 
-    /// Copy another canvas's non-empty cells into this one at offset (dx, dy).
-    /// Used to embed a sub-canvas (composite state's inner graph) inside the
-    /// parent canvas region already painted by `draw_composite_outer`.
-    pub(crate) fn stamp_canvas(&mut self, other: &Canvas, dx: usize, dy: usize) {
-        for y in 0..other.height {
+    /// Like `stamp_canvas`, but refuses to write any cell outside the
+    /// rectangle `[dx, dx + max_w) × [dy, dy + max_h)`. Used to embed a
+    /// composite state's inner canvas with a hard bound so an oversize inner
+    /// render cannot corrupt neighbouring layers.
+    pub(crate) fn stamp_canvas_clipped(
+        &mut self,
+        other: &Canvas,
+        dx: usize,
+        dy: usize,
+        max_w: usize,
+        max_h: usize,
+    ) {
+        let x_limit = max_w.min(other.width);
+        let y_limit = max_h.min(other.height);
+        for y in 0..y_limit {
             if dy + y >= self.height {
                 break;
             }
-            for x in 0..other.width {
+            for x in 0..x_limit {
                 if dx + x >= self.width {
                     break;
                 }
