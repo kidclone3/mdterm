@@ -548,7 +548,17 @@ fn render_state_canvas(diagram: &StateDiagram, theme: &Theme) -> Option<(Canvas,
             && let Some(inner_diagram) = parse_state_diagram(&comp.source)
             && let Some((inner_canvas, inner_w)) = render_state_canvas(&inner_diagram, theme)
         {
-            let w = inner_w + 4;
+            // Width must cover the inner canvas AND any incident edge label
+            // (label sits beside the composite's exterior, so add label_len + 4).
+            let incident_label = diagram
+                .edges
+                .iter()
+                .filter(|e| &e.from == id || &e.to == id)
+                .filter_map(|e| e.label.as_deref())
+                .map(|s| s.chars().count())
+                .max()
+                .unwrap_or(0);
+            let w = (inner_w + 4).max(incident_label + 4);
             let h = inner_canvas.height + 3;
             widths.insert(id.clone(), w);
             heights.insert(id.clone(), h);
@@ -597,9 +607,16 @@ fn render_state_canvas(diagram: &StateDiagram, theme: &Theme) -> Option<(Canvas,
 
     // Reserve side + top padding so notes have somewhere to live. Size from
     // the actual note boxes (longest line + 4 wide, n_lines + 2 tall) rather
-    // than a flat guess.
+    // than a flat guess. Also reserve room on the right for the longest
+    // down-edge label, which `draw_edge_td` writes rightward from the
+    // source's center via bounds-checked `set` (chars past the canvas edge
+    // would otherwise be silently dropped).
     let (left_pad, right_pad, over_pad) = note_padding(&diagram.notes);
-    let side_padding = left_pad.max(right_pad).max(2);
+    let max_down_label = (0..layers.len())
+        .map(|i| layer_down_edge_label_max(diagram, &layers, i))
+        .max()
+        .unwrap_or(0);
+    let side_padding = left_pad.max(right_pad + max_down_label).max(2);
     let top_padding = over_pad;
 
     let canvas_width = max_layer_width + side_padding * 2;
@@ -1013,5 +1030,49 @@ mod tests {
         );
         assert!(all.contains('B'), "target state B missing, got:\n{all}");
         assert!(all.contains('X'), "sibling state X missing, got:\n{all}");
+    }
+
+    #[test]
+    fn composite_width_includes_incident_edge_label() {
+        // `user_cancel` is a 12-char label on the Created -> Cancelled edge.
+        // The composite's rendered width must accommodate it (no border
+        // clipping of the label). We assert the label appears as a
+        // contiguous substring.
+        let rows = render_to_text(
+            "stateDiagram-v2\n[*] --> Created\nCreated --> Cancelled : user_cancel\nstate Cancelled {\n  [*] --> Refunded\n  Refunded --> [*]\n}\nCancelled --> [*]\nCreated --> [*]",
+        );
+        let all: String = rows.join("\n");
+        assert!(
+            all.contains("user_cancel"),
+            "incident edge label must render unsplit beside the composite, got:\n{all}"
+        );
+    }
+
+    #[test]
+    fn composite_external_edge_attaches_to_border() {
+        // Regression guard: incoming arrowhead must land on the composite's
+        // top-border row (not inside the interior). Today's geometry already
+        // satisfies this because NodeLayout.top_y points at the border.
+        let rows = render_to_text(
+            "stateDiagram-v2\n[*] --> Outer\nstate Outer {\n  Inner1 --> Inner2\n}\nOuter --> [*]",
+        );
+        let all: String = rows.join("\n");
+        assert!(all.contains("Outer"), "composite title should render");
+        let top_row_idx = rows
+            .iter()
+            .position(|r| r.contains("Outer") && r.contains('\u{256d}'))
+            .expect("composite top border row should exist");
+        let arrow_rows: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.contains('\u{25bc}'))
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            arrow_rows.iter().any(|&r| r <= top_row_idx + 1),
+            "incoming arrowhead must land on the composite top border (rows {:?}, top at {})",
+            arrow_rows,
+            top_row_idx
+        );
     }
 }
