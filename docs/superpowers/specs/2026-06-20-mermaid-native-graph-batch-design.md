@@ -367,40 +367,135 @@ bend, reusing the mid_x logic from `draw_edge_lr`. No arrowheads.
 
 ## Error handling and dispatch precedence
 
-Each parser returns `Option<...>`. On `None`, the dispatcher returns `None`
-and the markdown renderer falls back to a raw source code block — the same
-behavior as today for types still listed in `is_unsupported_diagram`.
+**Hard requirement:** if a native renderer fails for any reason — parse
+error, unsupported syntax, or a renderer bug — mdterm must (a) show the
+user what went wrong, and (b) still render the original mermaid source as
+a normal code block. A malformed diagram must never produce a blank gap,
+a stale `mermaid.ink` image, or a panic that kills the TUI.
 
-**Native-first dispatch (required for Batch G to actually take effect on
-Kitty/iTerm2/Sixel/HTML):** today `src/markdown.rs:274-303` checks
-`MermaidMode` *first*. In `MermaidMode::Image` it calls `mermaid_image_url`
-unconditionally — without ever consulting `render_mermaid`. That means a
-native renderer added in this batch would be silently bypassed for every
+### Failure modes
+
+Two failure modes are distinguished:
+
+- **Parse failure.** The parser cannot make sense of the source
+  (malformed mermaid, unsupported syntax within a type, empty body).
+  Today this silently returns `None`; in Batch G it carries a reason.
+- **Render failure.** The parser succeeded but the renderer panicked
+  during layout or canvas drawing (a bug in the new code, or pathological
+  input the layout algorithm doesn't handle). The dispatcher must catch
+  these via `std::panic::catch_unwind` so one bad diagram cannot crash
+  the whole TUI session.
+
+### New dispatcher signature
+
+`diagram::render_mermaid` changes return type:
+
+```rust
+pub enum DiagramError {
+    ParseFailed { reason: String },
+    RenderFailed { message: String },
+}
+
+pub fn render_mermaid(
+    code: &str,
+    theme: &Theme,
+) -> Result<(Vec<Vec<StyledSpan>>, usize), DiagramError>;
+```
+
+The dispatcher wraps each renderer call in `catch_unwind`. A panic is
+converted to `DiagramError::RenderFailed { message: panic_payload }`.
+
+Individual renderers (`graph::state::render`, `graph::class::render`,
+`graph::er::render`, `graph::mindmap::render`, and the existing
+flowchart and sequence renderers) continue to return
+`Option<(Vec<Vec<StyledSpan>>, usize)>` — `None` means "could not parse
+or lay out this input". The dispatcher turns `None` into
+`DiagramError::ParseFailed { reason }` where `reason` is derived from
+the keyword being dispatched (e.g. `"could not parse classDiagram"`).
+This keeps per-renderer code simple while still giving the user a
+coarse, type-specific diagnostic. If a parser can cheaply detect a more
+specific cause (e.g. `"empty diagram body"`, `"unterminated class body"`)
+it may return that instead via an `Option<String>` reason side-channel,
+but rich line-numbered diagnostics are explicitly out of scope for
+Batch G — the source block beneath the banner is the diagnostic.
+
+Existing internal tests use `.expect("…")` on the success path; that
+works unchanged on `Result`. Tests asserting failure switch from
+`assert!(render_mermaid(...).is_none())` to
+`assert!(matches!(render_mermaid(...), Err(_)))`.
+
+### Native-first dispatch
+
+Today `src/markdown.rs:274-303` checks `MermaidMode` *first*. In
+`MermaidMode::Image` it calls `mermaid_image_url` unconditionally —
+without ever consulting `render_mermaid`. That means a native renderer
+added in this batch would be silently bypassed for every
 Kitty/iTerm2/Sixel user (the population most affected by the broken
 mermaid.ink path). Batch G must change this.
 
 New dispatch in `src/markdown.rs` for `lang == "mermaid"`:
 
 1. Call `diagram::render_mermaid(&code, self.theme)` first.
-2. If it returns `Some`, emit the native ASCII diagram block via
+2. On `Ok(rows, width)`, emit the native ASCII diagram block via
    `emit_diagram_block` regardless of `mermaid_mode`. Native wins.
-3. If it returns `None`, the existing `MermaidMode` match decides:
-   - `Image` → `emit_image_block(mermaid_image_url(...))` (still broken
-     for unported types until Batch R).
-   - `AsciiThenImage` → same `emit_image_block` fallback.
-   - `AsciiThenSource` → return false, render as raw source code block.
+3. On `Err(DiagramError)`, call a new `emit_diagram_error_block(reason)`
+   that renders a labeled banner describing the failure, then fall
+   through to the normal code-block rendering path so the original
+   mermaid source is displayed underneath. `MermaidMode` is ignored in
+   this branch — the source block is the user-visible fallback on every
+   terminal protocol.
+4. Only when `render_mermaid` is not invoked at all (because the type is
+   still in `is_unsupported_diagram`) does the existing `MermaidMode`
+   match decide between `emit_image_block(mermaid_image_url(...))`
+   (broken until Batch R) and the source block.
 
-After this change, every type with a native renderer (flowchart, sequence,
-and the four new ones) is rendered natively on every terminal protocol.
-The `mermaid.ink` image path becomes a fallback only for the ~20
-unported types, and disappears entirely in Batch R.
+After this change, every type with a native renderer (flowchart,
+sequence, and the four new ones) is rendered natively on every terminal
+protocol. The `mermaid.ink` image path becomes a fallback only for the
+~20 unported types, and disappears entirely in Batch R.
 
-The existing tests `mermaid_ascii_then_image_uses_image_for_unsupported_types`
-and `mermaid_ascii_then_image_still_uses_ascii_for_flowcharts` keep their
-contracts. A new test `mermaid_image_mode_uses_native_for_supported_types`
-asserts that `erDiagram` after Batch G renders via the native ASCII path
-even in `MermaidMode::Image`, while an unported type (e.g. `pie`) still
-emits an image block.
+### Error banner presentation
+
+The error banner reuses the existing `emit_diagram_block` border style
+(`src/markdown.rs:474`) with a distinct label so users can tell at a
+glance what happened:
+
+```
+  ╭─ mermaid (render error: unsupported syntax in classDiagram) ───────╮
+  │ <no diagram content — see source below>                            │
+  ╰────────────────────────────────────────────────────────────────────╯
+```
+
+The label uses a new theme color `diagram_error_fg` (red-tinted in dark
+theme, dark-red in light theme) so it stands out from the neutral
+`code_label` of a successful render. The banner is one row tall (top
+border + bottom border, no content rows) to minimize vertical noise;
+the actual diagnostic information lives in the label and the source
+block beneath.
+
+The source block follows immediately, rendered through the normal
+syntect path with the existing ` mermaid (diagram) ` label — exactly
+what users see today for unported types.
+
+### Pipable output
+
+The same fallback applies to piped/non-TTY output. A parse failure
+during `mdterm README.md | less -R` produces the error banner followed
+by the source code block, so pipes never silently swallow diagrams.
+
+### Testing for failures
+
+- **Parse failure path:** a deliberately malformed classDiagram
+  (unterminated `class Foo {`) renders to an error banner whose label
+  contains `"render error"` plus the source block containing `class
+  Foo`.
+- **Render failure path:** inject a renderer that always panics (via a
+  `#[cfg(test)]` hook), assert the dispatcher returns
+  `Err(RenderFailed { .. })` and that `markdown.rs` emits the error
+  banner + source rather than crashing.
+- **Native-first precedence:** `erDiagram` after Batch G renders via the
+  native ASCII path even in `MermaidMode::Image`, while an unported
+  type (e.g. `pie`) still emits an image block.
 
 ## Testing
 
@@ -409,6 +504,14 @@ green without modification. Existing tests are split between
 `graph/flowchart.rs` (flowchart/parser/LR routing tests) and `sequence.rs`
 (sequence tests); the dispatch and `mermaid_image_url` tests stay in
 `mod.rs`.
+
+One existing test must change as part of Batch G, not the code-move phase:
+`unsupported_diagram_falls_back_to_source` in `diagram.rs:2413` currently
+asserts `classDiagram`, `erDiagram`, and `stateDiagram-v2` all return
+`None`. After Batch G they return `Ok(...)` — the test moves to
+`graph/{state,class,er}/rs` as positive smoke tests, and the dispatch
+test in `mod.rs` is reduced to a single unported type (e.g. `pie`) to
+keep proving the unsupported-type fallback path.
 
 Per new renderer:
 
@@ -426,6 +529,9 @@ Per new renderer:
   must pass unchanged after the `draw_edge_*` signature change, proving
   the byte-identical-rendering claim.
 
+Failure-path tests are covered above in *Error handling and dispatch
+precedence → Testing for failures*.
+
 ## Risks
 
 - **`draw_edge_*` signature change.** Switching from `Option<&str>` to
@@ -433,10 +539,13 @@ Per new renderer:
   migration is mechanical; existing tests are the regression check.
 - **Composite state rendering.** Rendering an inner graph to a sub-canvas
   and embedding as a tall outer node is new; the sub-canvas may need a
-  background tint (`composite_state_bg`). If the first attempt produces
-  clipped or overlapping boxes, fall back to a simpler two-level
-  flattening (no nested `state` blocks) and ship true compositing in a
-  follow-up.
+  background tint (`composite_state_bg`). The fallback is layered: (1)
+  attempt composite rendering with a sub-canvas; (2) if the result is
+  clipped or overlapping, degrade to two-level flattening (no nested
+  `state { }` blocks — children inlined into the parent layout); (3) if
+  even flattening fails, return `None` and the dispatcher shows the
+  error banner + source block. Layer 2 may ship before layer 1 if
+  compositing proves finicky; the user always lands on a usable view.
 - **Mindmap indent measurement.** Measuring indent from the first
   non-root line is heuristic. If real-world mindmap files mix tabs and
   spaces, the parser may misjudge depth. Mitigation: treat each leading
