@@ -15,6 +15,7 @@ pub struct Style {
     pub dim: bool,
     pub link_url: Option<String>,
     /// Marks inline-code spans so the (feature-gated) POS coloring pass can exempt them.
+    #[allow(dead_code)]
     pub code: bool,
 }
 
@@ -91,6 +92,7 @@ pub struct DocumentInfo {
     pub code_blocks: Vec<CodeBlockContent>,
     /// Number of leading source lines consumed by YAML frontmatter, if any.
     /// Lets the (feature-gated) POS coloring pass skip frontmatter.
+    #[allow(dead_code)]
     pub frontmatter_lines: Option<usize>,
 }
 
