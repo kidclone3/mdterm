@@ -472,6 +472,37 @@ fn to_graph(diagram: &StateDiagram) -> Graph {
     }
 }
 
+/// Compute left/right/over canvas padding required by the diagram's notes.
+/// Returns `(left_pad, right_pad, over_top_pad)`. Each side pad is the max
+/// note width on that side plus a 2-column gap; `over_top_pad` is the max
+/// over-note height plus one row when any over-note exists, else 0.
+fn note_padding(notes: &[StateNote]) -> (usize, usize, usize) {
+    let mut left = 2usize;
+    let mut right = 2usize;
+    let mut over = 0usize;
+    let mut has_over = false;
+    for n in notes {
+        let lines: Vec<&str> = if n.text.is_empty() {
+            vec![" "]
+        } else {
+            n.text.split('\n').collect()
+        };
+        let longest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+        let w = longest.max(3) + 4 + 2; // box width + gap
+        let h = lines.len() + 2 + 1; // box height + gap row
+        match n.side {
+            NoteSide::Left => left = left.max(w),
+            NoteSide::Right => right = right.max(w),
+            NoteSide::Over => {
+                has_over = true;
+                over = over.max(h);
+            }
+        }
+    }
+    let over_final = if has_over { over } else { 0 };
+    (left, right, over_final)
+}
+
 #[allow(clippy::too_many_lines)]
 fn render_state_canvas(diagram: &StateDiagram, theme: &Theme) -> Option<(Canvas, usize)> {
     let graph = to_graph(diagram);
@@ -528,10 +559,12 @@ fn render_state_canvas(diagram: &StateDiagram, theme: &Theme) -> Option<(Canvas,
     let total_height: usize =
         layer_heights.iter().sum::<usize>() + layers.len().saturating_sub(1) * edge_gap;
 
-    // Reserve side + top padding so notes have somewhere to live.
-    let has_notes = !diagram.notes.is_empty();
-    let side_padding = if has_notes { 18 } else { 2 };
-    let top_padding = if has_notes { 3 } else { 0 };
+    // Reserve side + top padding so notes have somewhere to live. Size from
+    // the actual note boxes (longest line + 4 wide, n_lines + 2 tall) rather
+    // than a flat guess.
+    let (left_pad, right_pad, over_pad) = note_padding(&diagram.notes);
+    let side_padding = left_pad.max(right_pad).max(2);
+    let top_padding = over_pad;
 
     let canvas_width = max_layer_width + side_padding * 2;
     let canvas_height = total_height + top_padding;
@@ -629,37 +662,41 @@ fn render_state_canvas(diagram: &StateDiagram, theme: &Theme) -> Option<(Canvas,
         }
     }
 
-    // Notes (simple side/over boxes positioned next to their target).
+    // Notes (single- or multi-line boxes positioned beside their target).
     for note in &diagram.notes {
         if let Some(target) = positions.get(&note.target) {
-            let text_chars: Vec<char> = note.text.chars().collect();
-            let note_w = text_chars.len().max(3) + 4;
-            let label = if note.text.is_empty() {
-                " "
+            let lines: Vec<&str> = if note.text.is_empty() {
+                vec![" "]
             } else {
-                &note.text
+                note.text.split('\n').collect()
             };
+            let longest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+            let note_w = longest.max(3) + 4;
+            let note_h = lines.len() + 2;
 
-            let (note_cx, note_y) = match note.side {
+            let (note_left_x, note_top_y) = match note.side {
                 NoteSide::Left => {
                     let left_x = target
                         .center_x
-                        .saturating_sub(target.width / 2 + note_w / 2 + 2);
-                    (left_x + note_w / 2, target.top_y)
+                        .saturating_sub(target.width / 2 + note_w + 2);
+                    (left_x, target.top_y)
                 }
                 NoteSide::Right => {
-                    let right_x = target.center_x + target.width / 2 + note_w / 2 + 2;
+                    let right_x = target.center_x + target.width / 2 + 2;
                     (right_x, target.top_y)
                 }
-                NoteSide::Over => (target.center_x, target.top_y.saturating_sub(3)),
+                NoteSide::Over => (
+                    target.center_x.saturating_sub(note_w / 2),
+                    target.top_y.saturating_sub(note_h + 1),
+                ),
             };
 
-            canvas.draw_node(
-                note_cx,
-                note_y,
+            canvas.draw_note_card(
+                note_left_x,
+                note_top_y,
                 note_w,
-                label,
-                NodeShape::Rectangle,
+                note_h,
+                &lines,
                 border_fg,
                 text_fg,
             );
@@ -776,8 +813,7 @@ mod tests {
         assert_eq!(d.notes[0].target, "Paid");
         assert_eq!(d.notes[0].side, NoteSide::Right);
         assert_eq!(
-            d.notes[0].text,
-            "Funds captured\nby the gateway",
+            d.notes[0].text, "Funds captured\nby the gateway",
             "block body should join trimmed lines with \\n"
         );
         for forbidden in ["Funds", "captured", "gateway", "end", "note"] {
@@ -795,7 +831,11 @@ mod tests {
         let d = parse_state_diagram(src).unwrap();
         assert_eq!(d.notes.len(), 1);
         assert_eq!(d.notes[0].text, "body line");
-        assert_eq!(d.edges.len(), 2, "parser should resume after the note block");
+        assert_eq!(
+            d.edges.len(),
+            2,
+            "parser should resume after the note block"
+        );
         assert!(d.nodes.contains_key("B"));
     }
 
@@ -862,6 +902,26 @@ mod tests {
         let rows = render_to_text("stateDiagram-v2\n[*] --> Idle\nnote right of Idle : ping");
         let all: String = rows.join("\n");
         assert!(all.contains("ping"), "note text should appear, got:\n{all}");
+    }
+
+    #[test]
+    fn renders_multiline_note_beside_target() {
+        let rows = render_to_text(
+            "stateDiagram-v2\n[*] --> Paid\nnote right of Paid\n    Funds captured\n    by the gateway\nend note\nPaid --> [*]",
+        );
+        let all: String = rows.join("\n");
+        assert!(
+            all.contains("Funds"),
+            "first note line should appear, got:\n{all}"
+        );
+        assert!(
+            all.contains("gateway"),
+            "second note line should appear, got:\n{all}"
+        );
+        assert!(
+            !all.split_whitespace().any(|t| t == "end"),
+            "`end` keyword must not leak into render, got:\n{all}"
+        );
     }
 
     #[test]
