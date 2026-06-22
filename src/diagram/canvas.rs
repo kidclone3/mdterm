@@ -383,11 +383,7 @@ impl Canvas {
         self.set_node(x + width - 1, bottom_y, br, border_fg);
     }
 
-    /// Draw a rounded rectangle note card with one or more centred text lines.
-    /// Each entry of `lines` is placed on its own row inside the interior
-    /// (no padding rows; matches the look of single-line notes). Used by
-    /// stateDiagram notes. Bounds-checked: writes outside the canvas are
-    /// silently dropped.
+    /// Rounded note card with one centred text line per interior row.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_note_card(
         &mut self,
@@ -440,9 +436,7 @@ impl Canvas {
         self.set_node(left_x + width - 1, bot_y, '\u{256f}', border_fg);
     }
 
-    /// Draw the outer frame + tinted background for a composite (nested) state
-    /// node. The inner sub-canvas is stamped separately via `stamp_canvas`.
-    /// Title sits on the top border (matching `draw_card` styling).
+    /// Composite state outer frame with title on the top border.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_composite_outer(
         &mut self,
@@ -491,10 +485,7 @@ impl Canvas {
         self.set_node_bg(left_x + width - 1, bot_y, '╯', border_fg, bg);
     }
 
-    /// Like `stamp_canvas`, but refuses to write any cell outside the
-    /// rectangle `[dx, dx + max_w) × [dy, dy + max_h)`. Used to embed a
-    /// composite state's inner canvas with a hard bound so an oversize inner
-    /// render cannot corrupt neighbouring layers.
+    /// Stamp `other` into this canvas at (dx, dy), clipped to (max_w, max_h).
     pub(crate) fn stamp_canvas_clipped(
         &mut self,
         other: &Canvas,

@@ -317,15 +317,9 @@ fn parse_state_diagram(code: &str) -> Option<StateDiagram> {
 
         // Notes.
         if trimmed.starts_with("note ") {
-            // Two forms: single-line `note SIDE of TARGET : text` and block
-            //   note SIDE of TARGET
-            //     body line
-            //     ...
-            //   end note
             if let Some(note) = parse_state_note(trimmed) {
                 let mut note = note;
                 if note.text.is_empty() && i < lines.len() {
-                    // Block form: collect body until `end note` (or bare `end`).
                     let mut body: Vec<String> = Vec::new();
                     while i < lines.len() {
                         let blk = lines[i].trim();
@@ -472,15 +466,11 @@ fn to_graph(diagram: &StateDiagram) -> Graph {
     }
 }
 
-/// Compute left/right/over canvas padding required by the diagram's notes.
-/// Returns `(left_pad, right_pad, over_top_pad)`. Each side pad is the max
-/// note width on that side plus a 2-column gap; `over_top_pad` is the max
-/// over-note height plus one row when any over-note exists, else 0.
+/// (left, right, over) canvas padding required by the diagram's notes.
 fn note_padding(notes: &[StateNote]) -> (usize, usize, usize) {
     let mut left = 2usize;
     let mut right = 2usize;
     let mut over = 0usize;
-    let mut has_over = false;
     for n in notes {
         let lines: Vec<&str> = if n.text.is_empty() {
             vec![" "]
@@ -493,21 +483,13 @@ fn note_padding(notes: &[StateNote]) -> (usize, usize, usize) {
         match n.side {
             NoteSide::Left => left = left.max(w),
             NoteSide::Right => right = right.max(w),
-            NoteSide::Over => {
-                has_over = true;
-                over = over.max(h);
-            }
+            NoteSide::Over => over = over.max(h),
         }
     }
-    let over_final = if has_over { over } else { 0 };
-    (left, right, over_final)
+    (left, right, over)
 }
 
-/// Longest `chars().count()` among edge labels whose `from` node sits in
-/// `layers[layer_idx]` and whose `to` node sits in the next layer
-/// (`layers[layer_idx + 1]`). Used to reserve horizontal room so down-edge
-/// labels drawn rightward from the arrow never reach a same-layer
-/// neighbour's box.
+/// Longest label among edges from `layers[layer_idx]` to the next layer.
 fn layer_down_edge_label_max(
     diagram: &StateDiagram,
     layers: &[Vec<String>],
@@ -548,8 +530,6 @@ fn render_state_canvas(diagram: &StateDiagram, theme: &Theme) -> Option<(Canvas,
             && let Some(inner_diagram) = parse_state_diagram(&comp.source)
             && let Some((inner_canvas, inner_w)) = render_state_canvas(&inner_diagram, theme)
         {
-            // Width must cover the inner canvas AND any incident edge label
-            // (label sits beside the composite's exterior, so add label_len + 4).
             let incident_label = diagram
                 .edges
                 .iter()
@@ -573,12 +553,12 @@ fn render_state_canvas(diagram: &StateDiagram, theme: &Theme) -> Option<(Canvas,
     let edge_gap = 4;
     let base_height = 3;
 
-    let layer_h_gaps: Vec<usize> = (0..layers.len())
-        .map(|i| {
-            layer_down_edge_label_max(diagram, &layers, i)
-                .saturating_add(2)
-                .max(h_gap_floor)
-        })
+    let layer_label_max: Vec<usize> = (0..layers.len())
+        .map(|i| layer_down_edge_label_max(diagram, &layers, i))
+        .collect();
+    let layer_h_gaps: Vec<usize> = layer_label_max
+        .iter()
+        .map(|&m| m.saturating_add(2).max(h_gap_floor))
         .collect();
     let mut max_layer_width = 0;
     for (idx, layer) in layers.iter().enumerate() {
@@ -605,18 +585,10 @@ fn render_state_canvas(diagram: &StateDiagram, theme: &Theme) -> Option<(Canvas,
     let total_height: usize =
         layer_heights.iter().sum::<usize>() + layers.len().saturating_sub(1) * edge_gap;
 
-    // Reserve side + top padding so notes have somewhere to live. Size from
-    // the actual note boxes (longest line + 4 wide, n_lines + 2 tall) rather
-    // than a flat guess. Also reserve room on the right for the longest
-    // down-edge label, which `draw_edge_td` writes rightward from the
-    // source's center via bounds-checked `set` (chars past the canvas edge
-    // would otherwise be silently dropped).
+    // Reserve side + top padding for notes and down-edge labels.
     let (left_pad, right_pad, over_pad) = note_padding(&diagram.notes);
-    let max_down_label = (0..layers.len())
-        .map(|i| layer_down_edge_label_max(diagram, &layers, i))
-        .max()
-        .unwrap_or(0);
-    let side_padding = left_pad.max(right_pad + max_down_label).max(2);
+    let max_down_label = layer_label_max.iter().copied().max().unwrap_or(0);
+    let side_padding = left_pad.max(right_pad + max_down_label);
     let top_padding = over_pad;
 
     let canvas_width = max_layer_width + side_padding * 2;
