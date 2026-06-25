@@ -342,26 +342,34 @@ pub struct Token {
 pub fn tokenize_spans(spans: &[StyledSpan]) -> Vec<Token> {
     let mut out = Vec::new();
     for (idx, span) in spans.iter().enumerate() {
-        let bytes = span.text.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            // skip whitespace
-            while i < bytes.len() && (bytes[i] as char).is_whitespace() {
-                i += 1;
+        // Walk by Unicode scalar value, not raw byte. A naive
+        // `(byte as char).is_whitespace()` reinterprets UTF-8 continuation
+        // bytes 0x85 (NEL) and 0xA0 (NBSP) as whitespace and ends a token
+        // mid-character — e.g. "✅" (e2 9c 85) panics on `text[0..2]`.
+        // `char_indices` yields byte offsets that are always char boundaries.
+        let mut token_start: Option<usize> = None;
+        for (byte_off, ch) in span.text.char_indices() {
+            if ch.is_whitespace() {
+                if let Some(start) = token_start {
+                    out.push(Token {
+                        span_idx: idx,
+                        byte_start: start,
+                        byte_len: byte_off - start,
+                        text: span.text[start..byte_off].to_string(),
+                    });
+                    token_start = None;
+                }
+            } else if token_start.is_none() {
+                token_start = Some(byte_off);
             }
-            if i >= bytes.len() {
-                break;
-            }
-            let start = i;
-            while i < bytes.len() && !(bytes[i] as char).is_whitespace() {
-                i += 1;
-            }
-            let end = i;
+        }
+        if let Some(start) = token_start {
+            let end = span.text.len();
             out.push(Token {
                 span_idx: idx,
                 byte_start: start,
                 byte_len: end - start,
-                text: span.text[start..end].to_string(),
+                text: span.text[start..].to_string(),
             });
         }
     }
@@ -805,5 +813,40 @@ mod tests {
             "fox should be a noun, got {}",
             fox.tag
         );
+    }
+    #[test]
+    fn tokenize_spans_keeps_multibyte_chars_intact() {
+        // ✅ = e2 9c 85: the 0x85 continuation byte is NEL when reinterpreted
+        // as a Latin-1 char, which the old byte-walk mistook for whitespace.
+        // NBSP (U+00A0 = c2 a0) is the other trap (0xa0 continuation byte).
+        let toks = tokenize_spans(&[span("✅ done")]);
+        assert_eq!(toks.len(), 2);
+        assert_eq!(toks[0].text, "✅");
+        assert_eq!(toks[0].byte_start, 0);
+        assert_eq!(toks[0].byte_len, 3); // full 3-byte emoji, not split at byte 2
+        assert_eq!(toks[1].text, "done");
+
+        let toks2 = tokenize_spans(&[span("a\u{00a0}b")]); // NBSP between words
+        assert_eq!(
+            toks2.iter().map(|t| t.text.clone()).collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+    }
+
+    #[test]
+    fn apply_handles_emoji_in_table_and_prose() {
+        // Regression: opening a document whose table cells / prose contain
+        // emoji with a 0x85/0xa0 UTF-8 continuation byte (e.g. ✅) used to
+        // panic with exit 101 when POS highlighting was on.
+        use crate::markdown;
+        let md = "| a | b |\n|---|---|\n| ✅ Done | 🔜 ⛔ |\n\nSome ✅ prose.\n";
+        let theme = Theme::dark();
+        let tagger = PosTagger::load().expect("load");
+        for w in [40usize, 80, 120, 180, 240] {
+            let (mut lines, _doc) = markdown::render(md, w, &theme, false);
+            apply(&mut lines, &theme, &tagger, PosCategorySet::all(), None);
+            // No panic across any render width.
+            let _ = lines;
+        }
     }
 }
