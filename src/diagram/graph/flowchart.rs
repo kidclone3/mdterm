@@ -542,7 +542,6 @@ pub(crate) fn render(code: &str, theme: &Theme) -> Option<(Vec<Vec<StyledSpan>>,
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::render_mermaid;
     use super::super::adjacent_layer_crossing_score;
     use super::*;
     use crate::style::StyledSpan;
@@ -559,7 +558,7 @@ mod tests {
 
     fn lr_routing_gap_cells(input: &str) -> Vec<(usize, char)> {
         let theme = Theme::dark();
-        let (rows, _) = render_mermaid(input, &theme).expect("expected rendered diagram");
+        let (rows, _) = render(input, &theme).expect("expected rendered diagram");
         let texts: Vec<String> = rows.iter().map(|row| row_text(row)).collect();
 
         let source_right = texts

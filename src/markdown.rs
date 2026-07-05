@@ -1935,6 +1935,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mermaid_xychart_renders_as_diagram_not_source() {
+        let theme = Theme::dark();
+        let input = "```mermaid\nxychart-beta\n  title \"Sales\"\n  x-axis [Jan, Feb, Mar]\n  y-axis \"Revenue\" 0 --> 100\n  bar [20, 45, 80]\n```";
+        let (lines, _) = render(input, 100, &theme, false);
+
+        let rendered: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            lines
+                .iter()
+                .any(|l| matches!(&l.meta, LineMeta::DiagramContent { .. })),
+            "expected xychart to emit diagram content, got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("render error"),
+            "xychart should not fall back to the raw source block, got:\n{rendered}"
+        );
+        assert!(rendered.contains("Sales"), "got:\n{rendered}");
+    }
+
     // ── Image placeholders ──────────────────────────────────────────────────
 
     #[test]
