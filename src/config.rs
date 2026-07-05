@@ -27,6 +27,8 @@ pub struct Config {
     pub line_numbers: bool,
     #[serde(default)]
     pub width: usize,
+    #[serde(default = "default_mermaid_render")]
+    pub mermaid_render: String,
     #[serde(default)]
     #[allow(dead_code)]
     pub pos: PosConfig,
@@ -46,12 +48,17 @@ fn default_theme() -> String {
     "dark".to_string()
 }
 
+fn default_mermaid_render() -> String {
+    "auto".to_string()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             theme: default_theme(),
             line_numbers: false,
             width: 0,
+            mermaid_render: default_mermaid_render(),
             pos: PosConfig::default(),
         }
     }
@@ -82,6 +89,18 @@ mod tests {
         let c = Config::default();
         assert!(!c.pos.enabled);
         assert!(c.pos.categories.is_none());
+    }
+
+    #[test]
+    fn default_mermaid_render_is_auto() {
+        let c = Config::default();
+        assert_eq!(c.mermaid_render, "auto");
+    }
+
+    #[test]
+    fn parse_mermaid_render_config() {
+        let c: Config = toml::from_str("mermaid_render = \"ascii\"\n").unwrap();
+        assert_eq!(c.mermaid_render, "ascii");
     }
 
     #[test]

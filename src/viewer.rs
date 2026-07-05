@@ -34,6 +34,7 @@ pub struct ViewerOptions {
     pub slide_mode: bool,
     pub line_numbers: bool,
     pub width_override: Option<usize>,
+    pub mermaid_render: crate::markdown::MermaidRenderMode,
     #[allow(dead_code)]
     pub pos_enabled: bool,
     #[allow(dead_code)]
@@ -307,6 +308,7 @@ struct ViewerState {
     slide_mode: bool,
     line_numbers: bool,
     width_override: Option<usize>,
+    mermaid_render: crate::markdown::MermaidRenderMode,
     #[cfg_attr(not(feature = "pos"), allow(dead_code))]
     pos_enabled: bool,
     #[cfg(feature = "pos")]
@@ -458,6 +460,7 @@ impl ViewerState {
             slide_mode: opts.slide_mode,
             line_numbers: opts.line_numbers,
             width_override: opts.width_override,
+            mermaid_render: opts.mermaid_render,
             pos_enabled: opts.pos_enabled,
             #[cfg(feature = "pos")]
             pos_categories: {
@@ -4711,6 +4714,7 @@ mod tests {
             slide_mode: false,
             line_numbers: false,
             width_override: None,
+            mermaid_render: crate::markdown::MermaidRenderMode::Ascii,
             pos_enabled: false,
             pos_categories: Vec::new(),
         };

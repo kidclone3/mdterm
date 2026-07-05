@@ -13,12 +13,41 @@ use crate::style::{
 };
 use crate::theme::Theme;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MermaidRenderMode {
+    Auto,
+    Image,
+    Ascii,
+}
+
+impl Default for MermaidRenderMode {
+    fn default() -> Self {
+        Self::Ascii
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RenderOptions {
+    pub line_numbers: bool,
+    pub mermaid_render: MermaidRenderMode,
+}
+
+impl RenderOptions {
+    pub fn ascii(line_numbers: bool) -> Self {
+        Self {
+            line_numbers,
+            mermaid_render: MermaidRenderMode::Ascii,
+        }
+    }
+}
+
 struct Renderer<'a> {
     theme: &'a Theme,
     lines: Vec<Line>,
     current_spans: Vec<StyledSpan>,
     width: usize,
     line_numbers: bool,
+    mermaid_render: MermaidRenderMode,
 
     // Inline style state
     bold: bool,
@@ -81,7 +110,7 @@ impl<'a> Renderer<'a> {
         source: &'a str,
         width: usize,
         theme: &'a Theme,
-        line_numbers: bool,
+        options: RenderOptions,
         syntax_set: &'a SyntaxSet,
         theme_set: &'a ThemeSet,
     ) -> Self {
@@ -90,7 +119,8 @@ impl<'a> Renderer<'a> {
             lines: Vec::new(),
             current_spans: Vec::new(),
             width,
-            line_numbers,
+            line_numbers: options.line_numbers,
+            mermaid_render: options.mermaid_render,
             bold: false,
             italic: false,
             strikethrough: false,
@@ -1664,11 +1694,27 @@ pub fn render_with(
     line_numbers: bool,
     syntect_res: &SyntectRes,
 ) -> (Vec<Line>, DocumentInfo) {
+    render_with_options(
+        input,
+        width,
+        theme,
+        RenderOptions::ascii(line_numbers),
+        syntect_res,
+    )
+}
+
+pub fn render_with_options(
+    input: &str,
+    width: usize,
+    theme: &Theme,
+    options: RenderOptions,
+    syntect_res: &SyntectRes,
+) -> (Vec<Line>, DocumentInfo) {
     let mut renderer = Renderer::new(
         input,
         width,
         theme,
-        line_numbers,
+        options,
         &syntect_res.syntax_set,
         &syntect_res.theme_set,
     );
