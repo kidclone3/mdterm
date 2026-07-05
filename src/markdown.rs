@@ -275,25 +275,8 @@ impl<'a> Renderer<'a> {
         // Check for special diagram blocks
         let is_diagram = matches!(lang.as_str(), "mermaid" | "plantuml" | "dot" | "graphviz");
 
-        // Render mermaid diagrams. Native-first dispatch: every mermaid block
-        // is handed to `render_mermaid`. A successful parse emits the ASCII
-        // diagram block; a parse/render failure (including known-but-unported
-        // types like pie/gantt) shows a labelled error banner and falls through
-        // to the raw source block beneath. No image path — mermaid.ink was
-        // removed in Batch R.
-        if lang == "mermaid" {
-            match diagram::render_mermaid(&code, self.theme) {
-                Ok((diagram_rows, diagram_width)) => {
-                    self.emit_diagram_block(block_id, &diagram_rows, diagram_width);
-                    return;
-                }
-                Err(err) => {
-                    self.emit_diagram_error_block(block_id, err.reason(), &code);
-                    // fall through to the normal code-block rendering path
-                    // so the original mermaid source is shown beneath the
-                    // error banner.
-                }
-            }
+        if lang == "mermaid" && self.emit_mermaid_block(block_id, &code) {
+            return;
         }
 
         let syntax = if lang.is_empty() {
@@ -682,6 +665,47 @@ impl<'a> Renderer<'a> {
             },
         );
         self.flush_line();
+    }
+
+    fn emit_mermaid_block(&mut self, block_id: usize, code: &str) -> bool {
+        match self.mermaid_render {
+            MermaidRenderMode::Ascii => self.emit_mermaid_ascii(block_id, code),
+            MermaidRenderMode::Auto => match self.emit_mermaid_image(code) {
+                Ok(()) => true,
+                Err(_) => self.emit_mermaid_ascii(block_id, code),
+            },
+            MermaidRenderMode::Image => match self.emit_mermaid_image(code) {
+                Ok(()) => true,
+                Err(err) => {
+                    self.emit_diagram_error_block(block_id, err.reason(), code);
+                    false
+                }
+            },
+        }
+    }
+
+    fn emit_mermaid_ascii(&mut self, block_id: usize, code: &str) -> bool {
+        match diagram::render_mermaid(code, self.theme) {
+            Ok((diagram_rows, diagram_width)) => {
+                self.emit_diagram_block(block_id, &diagram_rows, diagram_width);
+                true
+            }
+            Err(err) => {
+                self.emit_diagram_error_block(block_id, err.reason(), code);
+                false
+            }
+        }
+    }
+
+    fn emit_mermaid_image(&mut self, code: &str) -> Result<(), diagram::DiagramError> {
+        let rendered = diagram::render_mermaid_image(code, self.theme, self.width)?;
+        let key = rendered.key.clone();
+        self.generated_images.push(GeneratedImage {
+            key: rendered.key,
+            png: rendered.png,
+        });
+        self.emit_image_block(&key, "mermaid diagram");
+        Ok(())
     }
 
     fn emit_table(&mut self) {
@@ -1776,6 +1800,21 @@ mod tests {
         render(input, 80, &theme, false)
     }
 
+    fn render_mermaid_mode(input: &str, mode: MermaidRenderMode) -> (Vec<Line>, DocumentInfo) {
+        let theme = Theme::dark();
+        let res = SyntectRes::load();
+        render_with_options(
+            input,
+            100,
+            &theme,
+            RenderOptions {
+                line_numbers: false,
+                mermaid_render: mode,
+            },
+            &res,
+        )
+    }
+
     fn line_text(line: &Line) -> String {
         line.spans.iter().map(|s| s.text.as_str()).collect()
     }
@@ -1953,6 +1992,80 @@ mod tests {
             "xychart should not fall back to the raw source block, got:\n{rendered}"
         );
         assert!(rendered.contains("Sales"), "got:\n{rendered}");
+    }
+
+    #[test]
+    fn mermaid_image_mode_emits_generated_image_sidecar() {
+        let input = "```mermaid\nflowchart TD\nA[Start] --> B[Done]\n```";
+        let (lines, doc_info) = render_mermaid_mode(input, MermaidRenderMode::Image);
+
+        assert_eq!(doc_info.generated_images.len(), 1);
+        let generated = &doc_info.generated_images[0];
+        assert!(generated.key.starts_with("mdterm-generated://mermaid/"));
+        assert!(generated.png.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
+
+        let image_lines: Vec<_> = lines
+            .iter()
+            .filter(|line| matches!(&line.meta, LineMeta::Image { .. }))
+            .collect();
+        assert_eq!(image_lines.len(), crate::image::IMAGE_ROWS);
+        let LineMeta::Image { url, alt, row, .. } = &image_lines[0].meta else {
+            panic!("expected LineMeta::Image");
+        };
+        assert_eq!(url, &generated.key);
+        assert_eq!(alt, "mermaid diagram");
+        assert_eq!(*row, 0);
+        assert!(
+            !lines
+                .iter()
+                .any(|line| matches!(&line.meta, LineMeta::DiagramContent { .. })),
+            "image mode should not emit ASCII diagram rows on success"
+        );
+    }
+
+    #[test]
+    fn mermaid_ascii_mode_keeps_text_diagram() {
+        let input = "```mermaid\nflowchart TD\nA[Start] --> B[Done]\n```";
+        let (lines, doc_info) = render_mermaid_mode(input, MermaidRenderMode::Ascii);
+        let rendered: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+
+        assert!(doc_info.generated_images.is_empty());
+        assert!(
+            lines
+                .iter()
+                .any(|line| matches!(&line.meta, LineMeta::DiagramContent { .. })),
+            "ASCII mode should emit diagram content, got:\n{rendered}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|line| matches!(&line.meta, LineMeta::Image { .. })),
+            "ASCII mode should not emit image placeholders"
+        );
+        assert!(rendered.contains("Start"), "got:\n{rendered}");
+    }
+
+    #[test]
+    fn mermaid_image_mode_failure_emits_error_banner_and_source() {
+        let input = "```mermaid\nflowchart TD\n~~~not valid~~~\n```";
+        let (lines, doc_info) = render_mermaid_mode(input, MermaidRenderMode::Image);
+        let rendered: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+
+        assert!(doc_info.generated_images.is_empty());
+        assert!(
+            rendered.contains("render error"),
+            "expected a render-error banner, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("~~~not valid~~~"),
+            "raw mermaid source should follow the error banner"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|line| matches!(&line.meta, LineMeta::Image { .. })),
+            "render failure must not emit an image"
+        );
     }
 
     // ── Image placeholders ──────────────────────────────────────────────────
