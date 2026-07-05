@@ -971,6 +971,16 @@ impl ImageCache {
         self.images.contains_key(url) || self.in_flight.contains(url)
     }
 
+    pub fn insert_generated_png(&mut self, key: String, bytes: Vec<u8>) -> bool {
+        let decoded = image::load_from_memory(&bytes)
+            .ok()
+            .map(|img| downscale(img, MAX_SOURCE_DIM))
+            .map(Arc::new);
+        let ok = decoded.is_some();
+        self.images.insert(key, decoded);
+        ok
+    }
+
     /// Maximum number of concurrent background fetches.
     const MAX_CONCURRENT_FETCHES: usize = 10;
 
@@ -2319,6 +2329,36 @@ mod tests {
 
         assert!(cache.has_attempted("fail"));
         assert!(!cache.has_image("fail"));
+    }
+
+    #[test]
+    fn insert_generated_png_caches_decoded_image_and_marks_attempted() {
+        let mut cache = ImageCache::new();
+        let key = "mdterm-generated://mermaid/test".to_string();
+        let img = DynamicImage::new_rgb8(4, 3);
+        let mut bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+
+        assert!(cache.insert_generated_png(key.clone(), bytes));
+        assert!(cache.has_attempted(&key));
+        assert!(cache.has_image(&key));
+        assert_eq!(cache.image_dimensions(&key), Some((4, 3)));
+        assert_eq!(cache.in_flight_count(), 0);
+    }
+
+    #[test]
+    fn insert_generated_png_records_failed_decode() {
+        let mut cache = ImageCache::new();
+        let key = "mdterm-generated://mermaid/bad".to_string();
+
+        assert!(!cache.insert_generated_png(key.clone(), b"not png".to_vec()));
+        assert!(cache.has_attempted(&key));
+        assert!(!cache.has_image(&key));
+        assert!(cache.is_failed(&key));
     }
 
     // ── fetch_if_missing idempotency ─────────────────────────────────────────

@@ -451,6 +451,7 @@ impl ViewerState {
             doc_info: DocumentInfo {
                 code_blocks: Vec::new(),
                 frontmatter_lines: None,
+                generated_images: Vec::new(),
             },
             offset: 0,
             h_offset: 0,

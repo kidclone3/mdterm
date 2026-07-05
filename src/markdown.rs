@@ -8,8 +8,8 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::diagram;
 use crate::style::{
-    BLOCKQUOTE_PREFIX, BLOCKQUOTE_PREFIX_TRIMMED, CodeBlockContent, DocumentInfo, Line, LineMeta,
-    Style, StyledSpan,
+    BLOCKQUOTE_PREFIX, BLOCKQUOTE_PREFIX_TRIMMED, CodeBlockContent, DocumentInfo, GeneratedImage,
+    Line, LineMeta, Style, StyledSpan,
 };
 use crate::theme::Theme;
 
@@ -93,6 +93,7 @@ struct Renderer<'a> {
 
     // Document info
     code_blocks: Vec<CodeBlockContent>,
+    generated_images: Vec<GeneratedImage>,
 
     // Syntect (shared reference)
     syntax_set: &'a SyntaxSet,
@@ -150,6 +151,7 @@ impl<'a> Renderer<'a> {
             image_url: String::new(),
             image_alt: String::new(),
             code_blocks: Vec::new(),
+            generated_images: Vec::new(),
             syntax_set,
             theme_set,
         }
@@ -1736,6 +1738,7 @@ pub fn render_with_options(
     let doc_info = DocumentInfo {
         code_blocks: renderer.code_blocks,
         frontmatter_lines: frontmatter_line_count(input),
+        generated_images: renderer.generated_images,
     };
 
     (renderer.lines, doc_info)
