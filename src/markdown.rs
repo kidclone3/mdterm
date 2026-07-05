@@ -2002,7 +2002,11 @@ mod tests {
         assert_eq!(doc_info.generated_images.len(), 1);
         let generated = &doc_info.generated_images[0];
         assert!(generated.key.starts_with("mdterm-generated://mermaid/"));
-        assert!(generated.png.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
+        assert!(
+            generated
+                .png
+                .starts_with(&[137, 80, 78, 71, 13, 10, 26, 10])
+        );
 
         let image_lines: Vec<_> = lines
             .iter()

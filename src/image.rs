@@ -725,6 +725,23 @@ const MAX_IMAGE_ROWS: usize = 20;
 
 /// Max source dimension before downscaling
 const MAX_SOURCE_DIM: u32 = 2000;
+const GENERATED_MERMAID_PREFIX: &str = "mdterm-generated://mermaid/";
+const GENERATED_MERMAID_MAX_SOURCE_DIM: u32 = 4096;
+const CELL_PLACED_PROTOCOL_PIXEL_SCALE: u32 = 2;
+
+fn generated_source_dim_limit(key: &str) -> u32 {
+    if key.starts_with(GENERATED_MERMAID_PREFIX) {
+        GENERATED_MERMAID_MAX_SOURCE_DIM
+    } else {
+        MAX_SOURCE_DIM
+    }
+}
+
+fn scaled_cell_pixels(cell_px: u32) -> u32 {
+    cell_px
+        .saturating_mul(CELL_PLACED_PROTOCOL_PIXEL_SCALE)
+        .max(1)
+}
 
 // ── Image cache ─────────────────────────────────────────────────────────────
 
@@ -972,9 +989,10 @@ impl ImageCache {
     }
 
     pub fn insert_generated_png(&mut self, key: String, bytes: Vec<u8>) -> bool {
+        let source_dim_limit = generated_source_dim_limit(&key);
         let decoded = image::load_from_memory(&bytes)
             .ok()
-            .map(|img| downscale(img, MAX_SOURCE_DIM))
+            .map(|img| downscale(img, source_dim_limit))
             .map(Arc::new);
         let ok = decoded.is_some();
         self.images.insert(key, decoded);
@@ -1826,8 +1844,10 @@ fn pre_render_image(
 
     match protocol {
         ImageProtocol::Kitty => {
-            let target_w = (cols as u32 * cell_metrics.cell_w_px).max(1);
-            let target_h = (rows as u32 * cell_metrics.cell_h_px).max(1);
+            let cell_w_px = scaled_cell_pixels(cell_metrics.cell_w_px);
+            let cell_h_px = scaled_cell_pixels(cell_metrics.cell_h_px);
+            let target_w = (cols as u32).saturating_mul(cell_w_px).max(1);
+            let target_h = (rows as u32).saturating_mul(cell_h_px).max(1);
             let resized = img.resize_exact(target_w, target_h, FilterType::Lanczos3);
             let png = encode_png(&resized)?;
             Some(PreRenderedResult::Kitty {
@@ -1836,7 +1856,7 @@ fn pre_render_image(
                 rows,
                 target_w,
                 target_h,
-                cell_h_px: cell_metrics.cell_h_px,
+                cell_h_px,
                 png,
             })
         }
@@ -1845,8 +1865,10 @@ fn pre_render_image(
             // needs a combining diacritic and we only have 256 entries.
             let cols = cols.min(DIACRITICS.len());
             let rows = rows.min(DIACRITICS.len());
-            let target_w = (cols as u32 * cell_metrics.cell_w_px).max(1);
-            let target_h = (rows as u32 * cell_metrics.cell_h_px).max(1);
+            let cell_w_px = scaled_cell_pixels(cell_metrics.cell_w_px);
+            let cell_h_px = scaled_cell_pixels(cell_metrics.cell_h_px);
+            let target_w = (cols as u32).saturating_mul(cell_w_px).max(1);
+            let target_h = (rows as u32).saturating_mul(cell_h_px).max(1);
             let resized = img.resize_exact(target_w, target_h, FilterType::Lanczos3);
             let png = encode_png(&resized)?;
             Some(PreRenderedResult::KittyUnicode {
@@ -1857,15 +1879,17 @@ fn pre_render_image(
             })
         }
         ImageProtocol::Iterm2 => {
-            let target_w = (cols as u32 * cell_metrics.cell_w_px).max(1);
-            let target_h = (rows as u32 * cell_metrics.cell_h_px).max(1);
+            let cell_w_px = scaled_cell_pixels(cell_metrics.cell_w_px);
+            let cell_h_px = scaled_cell_pixels(cell_metrics.cell_h_px);
+            let target_w = (cols as u32).saturating_mul(cell_w_px).max(1);
+            let target_h = (rows as u32).saturating_mul(cell_h_px).max(1);
             let resized = img.resize_exact(target_w, target_h, FilterType::Lanczos3);
             let png = encode_png(&resized)?;
             let full_base64 = BASE64.encode(png);
             Some(PreRenderedResult::Iterm2 {
                 cols,
                 total_rows: rows,
-                cell_h_px: cell_metrics.cell_h_px,
+                cell_h_px,
                 resized,
                 full_base64,
             })
@@ -2040,8 +2064,12 @@ fn pre_render_terminology(
     }
 
     // Remote image (or local path no longer on disk): resize and write a temp file.
-    let target_w = (cols * cell_metrics.cell_w_px).max(1);
-    let target_h = (rows * cell_metrics.cell_h_px).max(1);
+    let target_w = cols
+        .saturating_mul(scaled_cell_pixels(cell_metrics.cell_w_px))
+        .max(1);
+    let target_h = rows
+        .saturating_mul(scaled_cell_pixels(cell_metrics.cell_h_px))
+        .max(1);
     let resized = img.resize_exact(target_w, target_h, FilterType::Lanczos3);
 
     // Create a per-process private temp directory (mode 0700 on Unix) so that
@@ -2351,6 +2379,22 @@ mod tests {
     }
 
     #[test]
+    fn insert_generated_mermaid_png_preserves_preview_resolution() {
+        let mut cache = ImageCache::new();
+        let key = "mdterm-generated://mermaid/large".to_string();
+        let img = DynamicImage::new_rgb8(2401, 10);
+        let mut bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+
+        assert!(cache.insert_generated_png(key.clone(), bytes));
+        assert_eq!(cache.image_dimensions(&key), Some((2401, 10)));
+    }
+
+    #[test]
     fn insert_generated_png_records_failed_decode() {
         let mut cache = ImageCache::new();
         let key = "mdterm-generated://mermaid/bad".to_string();
@@ -2533,6 +2577,69 @@ mod tests {
         let (cols, rows) = calc_display_cells(100, 1000, 80, 10, 2.0);
         assert!(rows <= 10);
         assert!(cols >= 1);
+    }
+
+    #[test]
+    fn kitty_prerender_keeps_hidpi_pixels_for_cell_placement() {
+        let img = DynamicImage::new_rgb8(100, 50);
+        let metrics = CellMetrics {
+            aspect: 2.0,
+            cell_w_px: 8,
+            cell_h_px: 16,
+        };
+
+        let rendered =
+            pre_render_image(&img, ImageProtocol::Kitty, 20, metrics, (0, 0, 0), 1, None)
+                .expect("pre-render should succeed");
+
+        let PreRenderedResult::Kitty {
+            cols,
+            rows,
+            target_w,
+            target_h,
+            cell_h_px,
+            png,
+            ..
+        } = rendered
+        else {
+            panic!("expected Kitty pre-render result");
+        };
+
+        assert_eq!((cols, rows), (20, 5));
+        assert_eq!(target_w, 20 * 8 * 2);
+        assert_eq!(target_h, 5 * 16 * 2);
+        assert_eq!(cell_h_px, 16 * 2);
+        let decoded = image::load_from_memory(&png).expect("encoded PNG should decode");
+        assert_eq!(decoded.dimensions(), (target_w, target_h));
+    }
+
+    #[test]
+    fn sixel_prerender_keeps_exact_terminal_pixel_size() {
+        let img = DynamicImage::new_rgb8(100, 50);
+        let metrics = CellMetrics {
+            aspect: 2.0,
+            cell_w_px: 8,
+            cell_h_px: 16,
+        };
+
+        let rendered =
+            pre_render_image(&img, ImageProtocol::Sixel, 20, metrics, (0, 0, 0), 1, None)
+                .expect("pre-render should succeed");
+
+        let PreRenderedResult::Sixel {
+            cols,
+            total_rows,
+            cell_h_px,
+            resized,
+            ..
+        } = rendered
+        else {
+            panic!("expected Sixel pre-render result");
+        };
+
+        assert_eq!((cols, total_rows), (20, 5));
+        assert_eq!(cell_h_px, 16);
+        assert_eq!(resized.dimensions(), (20 * 8, 5 * 16));
     }
 
     // ── blend_alpha ─────────────────────────────────────────────────────────
