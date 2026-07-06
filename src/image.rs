@@ -727,6 +727,7 @@ const MAX_IMAGE_ROWS: usize = 20;
 const MAX_SOURCE_DIM: u32 = 2000;
 const GENERATED_MERMAID_PREFIX: &str = "mdterm-generated://mermaid/";
 const GENERATED_MERMAID_MAX_SOURCE_DIM: u32 = 4096;
+const GENERATED_MERMAID_MAX_IMAGE_ROWS: usize = 40;
 const CELL_PLACED_PROTOCOL_PIXEL_SCALE: u32 = 2;
 
 fn generated_source_dim_limit(key: &str) -> u32 {
@@ -734,6 +735,14 @@ fn generated_source_dim_limit(key: &str) -> u32 {
         GENERATED_MERMAID_MAX_SOURCE_DIM
     } else {
         MAX_SOURCE_DIM
+    }
+}
+
+fn image_row_limit(url: &str) -> usize {
+    if url.starts_with(GENERATED_MERMAID_PREFIX) {
+        GENERATED_MERMAID_MAX_IMAGE_ROWS
+    } else {
+        MAX_IMAGE_ROWS
     }
 }
 
@@ -1090,7 +1099,7 @@ impl ImageCache {
     }
 
     pub fn ideal_rows(&self, url: &str, content_width: usize) -> Option<usize> {
-        let (_, rows) = self.display_size(url, content_width, MAX_IMAGE_ROWS)?;
+        let (_, rows) = self.display_size(url, content_width, image_row_limit(url))?;
         Some(rows)
     }
 
@@ -1139,6 +1148,7 @@ impl ImageCache {
         let url_owned = url.to_string();
         let protocol = self.protocol;
         let cell_metrics = self.cell_metrics;
+        let max_rows = image_row_limit(url);
 
         let kitty_id = if matches!(protocol, ImageProtocol::Kitty | ImageProtocol::KittyUnicode) {
             self.next_kitty_id = self.next_kitty_id.wrapping_add(1);
@@ -1180,6 +1190,7 @@ impl ImageCache {
                     &img,
                     protocol,
                     content_width,
+                    max_rows,
                     cell_metrics,
                     bg,
                     kitty_id,
@@ -1828,19 +1839,15 @@ fn pre_render_image(
     img: &DynamicImage,
     protocol: ImageProtocol,
     content_width: usize,
+    max_rows: usize,
     cell_metrics: CellMetrics,
     bg: (u8, u8, u8),
     kitty_id: u32,
     terminology: Option<&TerminologyCtx<'_>>,
 ) -> Option<PreRenderedResult> {
     let (img_w, img_h) = img.dimensions();
-    let (cols, rows) = calc_display_cells(
-        img_w,
-        img_h,
-        content_width,
-        MAX_IMAGE_ROWS,
-        cell_metrics.aspect,
-    );
+    let (cols, rows) =
+        calc_display_cells(img_w, img_h, content_width, max_rows, cell_metrics.aspect);
 
     match protocol {
         ImageProtocol::Kitty => {
@@ -1921,7 +1928,7 @@ fn pre_render_image(
         ImageProtocol::Terminology => {
             let ctx = terminology
                 .expect("pre_render_image: Terminology protocol requires a TerminologyCtx");
-            pre_render_terminology(img, ctx.url, content_width, cell_metrics).map(|ti| {
+            pre_render_terminology(img, ctx.url, content_width, max_rows, cell_metrics).map(|ti| {
                 if ti.is_temp {
                     // Register the temp path in the shared registry *before* wrapping
                     // the result, so it is cleaned up even if the render channel is
@@ -2003,16 +2010,12 @@ fn pre_render_terminology(
     img: &DynamicImage,
     url: &str,
     content_width: usize,
+    max_rows: usize,
     cell_metrics: CellMetrics,
 ) -> Option<TerminologyImage> {
     let (img_w, img_h) = img.dimensions();
-    let (cols, rows) = calc_display_cells(
-        img_w,
-        img_h,
-        content_width,
-        MAX_IMAGE_ROWS,
-        cell_metrics.aspect,
-    );
+    let (cols, rows) =
+        calc_display_cells(img_w, img_h, content_width, max_rows, cell_metrics.aspect);
     // Terminology hard limit: both width and height must be < 512 (from tycat.c:
     // `if ((w >= 512) || (h >= 512)) return;`). Also ensure neither is zero.
     let cols = (cols as u32).clamp(1, 511);
@@ -2395,6 +2398,46 @@ mod tests {
     }
 
     #[test]
+    fn generated_mermaid_images_get_larger_display_row_budget() {
+        let mut cache = ImageCache::new();
+        cache.cell_metrics = CellMetrics {
+            aspect: 2.0,
+            cell_w_px: 8,
+            cell_h_px: 16,
+        };
+        let key = "mdterm-generated://mermaid/tall".to_string();
+        let img = DynamicImage::new_rgb8(800, 800);
+        let mut bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        assert!(cache.insert_generated_png(key.clone(), bytes));
+
+        assert_eq!(cache.ideal_rows(&key, 80), Some(40));
+    }
+
+    #[test]
+    fn normal_images_keep_default_display_row_budget() {
+        let mut cache = ImageCache::new();
+        cache.cell_metrics = CellMetrics {
+            aspect: 2.0,
+            cell_w_px: 8,
+            cell_h_px: 16,
+        };
+        cache.insert(
+            "http://example.com/square.png",
+            Some(DynamicImage::new_rgb8(800, 800)),
+        );
+
+        assert_eq!(
+            cache.ideal_rows("http://example.com/square.png", 80),
+            Some(20)
+        );
+    }
+
+    #[test]
     fn insert_generated_png_records_failed_decode() {
         let mut cache = ImageCache::new();
         let key = "mdterm-generated://mermaid/bad".to_string();
@@ -2588,9 +2631,17 @@ mod tests {
             cell_h_px: 16,
         };
 
-        let rendered =
-            pre_render_image(&img, ImageProtocol::Kitty, 20, metrics, (0, 0, 0), 1, None)
-                .expect("pre-render should succeed");
+        let rendered = pre_render_image(
+            &img,
+            ImageProtocol::Kitty,
+            20,
+            MAX_IMAGE_ROWS,
+            metrics,
+            (0, 0, 0),
+            1,
+            None,
+        )
+        .expect("pre-render should succeed");
 
         let PreRenderedResult::Kitty {
             cols,
@@ -2622,9 +2673,17 @@ mod tests {
             cell_h_px: 16,
         };
 
-        let rendered =
-            pre_render_image(&img, ImageProtocol::Sixel, 20, metrics, (0, 0, 0), 1, None)
-                .expect("pre-render should succeed");
+        let rendered = pre_render_image(
+            &img,
+            ImageProtocol::Sixel,
+            20,
+            MAX_IMAGE_ROWS,
+            metrics,
+            (0, 0, 0),
+            1,
+            None,
+        )
+        .expect("pre-render should succeed");
 
         let PreRenderedResult::Sixel {
             cols,
@@ -3335,7 +3394,7 @@ mod tests {
             .map(|rd| rd.flatten().count())
             .unwrap_or(0);
 
-        let result = pre_render_terminology(&img, source_path_str, 80, metrics)
+        let result = pre_render_terminology(&img, source_path_str, 80, MAX_IMAGE_ROWS, metrics)
             .expect("pre_render_terminology returned None for a local path within cwd");
 
         let after_count = std::fs::read_dir(&priv_dir)
