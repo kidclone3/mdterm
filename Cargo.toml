@@ -30,6 +30,7 @@ flate2 = { version = "1", optional = true }
 merman = { version = "=0.7.0", default-features = false, features = ["ascii", "raster"] }
 
 [features]
+default = ["pos"]
 pos = ["dep:flate2"]
 
 [[example]]

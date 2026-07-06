@@ -34,9 +34,9 @@ pub struct Config {
     pub pos: PosConfig,
 }
 
-#[derive(Deserialize, Clone, Debug, Default)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct PosConfig {
-    #[serde(default)]
+    #[serde(default = "default_pos_enabled")]
     #[allow(dead_code)]
     pub enabled: bool,
     #[serde(default, deserialize_with = "deserialize_categories")]
@@ -50,6 +50,19 @@ fn default_theme() -> String {
 
 fn default_mermaid_render() -> String {
     "auto".to_string()
+}
+
+fn default_pos_enabled() -> bool {
+    true
+}
+
+impl Default for PosConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_pos_enabled(),
+            categories: None,
+        }
+    }
 }
 
 impl Default for Config {
@@ -85,9 +98,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_pos_is_disabled_and_all_categories() {
+    fn default_pos_is_enabled_and_all_categories() {
         let c = Config::default();
-        assert!(!c.pos.enabled);
+        assert!(c.pos.enabled);
         assert!(c.pos.categories.is_none());
     }
 
@@ -142,6 +155,7 @@ categories = ["noun", "verb"]
     fn parse_pos_scalar_single_category() {
         let toml = "[pos]\ncategories = \"noun\"\n";
         let c: Config = toml::from_str(toml).unwrap();
+        assert!(c.pos.enabled);
         assert_eq!(c.pos.categories, Some(vec!["noun".to_string()]));
     }
 }

@@ -47,14 +47,15 @@ Requires Rust 1.95+ (edition 2024).
 cargo install --path .
 ```
 
-### Optional: POS highlighting
+### POS highlighting
 
 The `pos` feature adds part-of-speech coloring (~2 MB of embedded model data). It
-is off by default to keep the default build lean.
+is enabled by default; disable default features for a lean build without the
+embedded model.
 
 ```bash
-cargo install --features pos --path .    # with POS highlighting
-cargo install --path .                   # without (default)
+cargo install --path .                   # with POS highlighting
+cargo install --no-default-features --path .  # without POS highlighting
 ```
 
 ## Usage
@@ -143,7 +144,7 @@ width = 0               # display width (0 = auto)
 mermaid_render = "auto" # "auto", "image", or "ascii"
 
 [pos]                   # part-of-speech highlighting (requires `pos` feature)
-enabled = false          # start with POS on
+enabled = true           # start with POS on; set false to disable
 categories = ["noun", "verb"]  # only these; omit or "all" for every category
 ```
 
