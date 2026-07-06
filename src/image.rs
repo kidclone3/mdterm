@@ -1851,19 +1851,16 @@ fn pre_render_image(
 
     match protocol {
         ImageProtocol::Kitty => {
-            let cell_w_px = scaled_cell_pixels(cell_metrics.cell_w_px);
-            let cell_h_px = scaled_cell_pixels(cell_metrics.cell_h_px);
-            let target_w = (cols as u32).saturating_mul(cell_w_px).max(1);
-            let target_h = (rows as u32).saturating_mul(cell_h_px).max(1);
-            let resized = img.resize_exact(target_w, target_h, FilterType::Lanczos3);
-            let png = encode_png(&resized)?;
+            let target_w = img_w.max(1);
+            let target_h = img_h.max(1);
+            let png = encode_png(img)?;
             Some(PreRenderedResult::Kitty {
                 id: kitty_id,
                 cols,
                 rows,
                 target_w,
                 target_h,
-                cell_h_px,
+                cell_h_px: target_h.div_ceil(rows as u32).max(1),
                 png,
             })
         }
@@ -1872,12 +1869,7 @@ fn pre_render_image(
             // needs a combining diacritic and we only have 256 entries.
             let cols = cols.min(DIACRITICS.len());
             let rows = rows.min(DIACRITICS.len());
-            let cell_w_px = scaled_cell_pixels(cell_metrics.cell_w_px);
-            let cell_h_px = scaled_cell_pixels(cell_metrics.cell_h_px);
-            let target_w = (cols as u32).saturating_mul(cell_w_px).max(1);
-            let target_h = (rows as u32).saturating_mul(cell_h_px).max(1);
-            let resized = img.resize_exact(target_w, target_h, FilterType::Lanczos3);
-            let png = encode_png(&resized)?;
+            let png = encode_png(img)?;
             Some(PreRenderedResult::KittyUnicode {
                 id: kitty_id,
                 cols,
@@ -2657,11 +2649,42 @@ mod tests {
         };
 
         assert_eq!((cols, rows), (20, 5));
-        assert_eq!(target_w, 20 * 8 * 2);
-        assert_eq!(target_h, 5 * 16 * 2);
-        assert_eq!(cell_h_px, 16 * 2);
+        assert_eq!(target_w, 100);
+        assert_eq!(target_h, 50);
+        assert_eq!(cell_h_px, 10);
         let decoded = image::load_from_memory(&png).expect("encoded PNG should decode");
         assert_eq!(decoded.dimensions(), (target_w, target_h));
+    }
+
+    #[test]
+    fn kitty_row_uses_proportional_source_slice() {
+        let mut cache = ImageCache::new();
+        cache.protocol = ImageProtocol::Kitty;
+        cache.kitty_images.insert(
+            "img".to_string(),
+            Some(KittyImage {
+                id: 7,
+                cols: 20,
+                rows: 5,
+                target_w: 100,
+                target_h: 50,
+                cell_h_px: 10,
+                pending_png: None,
+            }),
+        );
+
+        let mut out = Vec::new();
+        assert!(
+            cache
+                .render_kitty_row(&mut out, "img", 3, 20)
+                .expect("render should succeed")
+        );
+        let rendered = String::from_utf8(out).expect("Kitty escape should be UTF-8");
+
+        assert!(
+            rendered.contains("\x1b_Ga=p,i=7,q=2,x=0,y=30,w=100,h=10,c=20,r=1;\x1b\\"),
+            "got: {rendered:?}"
+        );
     }
 
     #[test]
