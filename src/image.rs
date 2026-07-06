@@ -59,6 +59,56 @@ fn tmux_allows_passthrough() -> bool {
         })
 }
 
+fn kitty_compatible_term(term: &str) -> bool {
+    term == "xterm-ghostty" || term == "xterm-kitty"
+}
+
+fn tmux_client_termname() -> Option<String> {
+    let out = std::process::Command::new("tmux")
+        .args(["display-message", "-p", "#{client_termname}"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let termname = String::from_utf8(out.stdout).ok()?;
+    let termname = termname.trim();
+    if termname.is_empty() {
+        None
+    } else {
+        Some(termname.to_string())
+    }
+}
+
+fn tmux_passthrough_protocol(
+    term_program: Option<&str>,
+    lc_terminal: Option<&str>,
+    term: Option<&str>,
+    kitty_window_id: bool,
+    konsole_version: bool,
+    client_termname: Option<&str>,
+) -> Option<ImageProtocol> {
+    match term_program {
+        Some("ghostty" | "WezTerm") => return Some(ImageProtocol::KittyUnicode),
+        Some("iTerm.app") => return Some(ImageProtocol::Iterm2),
+        _ => {}
+    }
+
+    if lc_terminal == Some("iTerm2") {
+        return Some(ImageProtocol::Iterm2);
+    }
+    if term.is_some_and(kitty_compatible_term) {
+        return Some(ImageProtocol::KittyUnicode);
+    }
+    if kitty_window_id || konsole_version {
+        return Some(ImageProtocol::KittyUnicode);
+    }
+    if client_termname.is_some_and(kitty_compatible_term) {
+        return Some(ImageProtocol::KittyUnicode);
+    }
+    None
+}
+
 /// Parse the running tmux version string into (major, minor).
 /// Handles version strings like "tmux 3.3a", "tmux 3.4", "tmux next-3.5".
 fn tmux_version() -> Option<(u32, u32)> {
@@ -175,27 +225,19 @@ pub fn detect_protocol() -> ImageProtocol {
     if in_tmux {
         let passthrough_ok = tmux_allows_passthrough();
         if passthrough_ok {
-            if let Ok(term) = std::env::var("TERM_PROGRAM") {
-                match term.as_str() {
-                    "ghostty" | "WezTerm" => return ImageProtocol::KittyUnicode,
-                    "iTerm.app" => return ImageProtocol::Iterm2,
-                    _ => {}
-                }
-            }
-            // LC_TERMINAL is another way iTerm2 identifies itself.
-            if std::env::var("LC_TERMINAL").ok().as_deref() == Some("iTerm2") {
-                return ImageProtocol::Iterm2;
-            }
-            if let Ok(term) = std::env::var("TERM")
-                && (term == "xterm-ghostty" || term == "xterm-kitty")
-            {
-                return ImageProtocol::KittyUnicode;
-            }
-            if std::env::var("KITTY_WINDOW_ID").is_ok() {
-                return ImageProtocol::KittyUnicode;
-            }
-            if std::env::var("KONSOLE_VERSION").is_ok() {
-                return ImageProtocol::KittyUnicode;
+            let term_program = std::env::var("TERM_PROGRAM").ok();
+            let lc_terminal = std::env::var("LC_TERMINAL").ok();
+            let term = std::env::var("TERM").ok();
+            let client_termname = tmux_client_termname();
+            if let Some(protocol) = tmux_passthrough_protocol(
+                term_program.as_deref(),
+                lc_terminal.as_deref(),
+                term.as_deref(),
+                std::env::var("KITTY_WINDOW_ID").is_ok(),
+                std::env::var("KONSOLE_VERSION").is_ok(),
+                client_termname.as_deref(),
+            ) {
+                return protocol;
             }
         }
         // Either passthrough is disabled or no recognised Kitty-Unicode /
@@ -3254,6 +3296,36 @@ mod tests {
         // so tmux_supports_sixel() also returns false → falls through to HalfBlock.
         assert_eq!(proto, ImageProtocol::HalfBlock);
         // _env restores all saved vars on drop.
+    }
+
+    #[test]
+    fn tmux_passthrough_detects_kitty_from_client_termname() {
+        assert_eq!(
+            tmux_passthrough_protocol(
+                Some("tmux"),
+                None,
+                Some("tmux-256color"),
+                false,
+                false,
+                Some("xterm-kitty"),
+            ),
+            Some(ImageProtocol::KittyUnicode)
+        );
+    }
+
+    #[test]
+    fn tmux_passthrough_detects_iterm_before_client_termname() {
+        assert_eq!(
+            tmux_passthrough_protocol(
+                Some("iTerm.app"),
+                None,
+                Some("tmux-256color"),
+                false,
+                false,
+                Some("xterm-kitty"),
+            ),
+            Some(ImageProtocol::Iterm2)
+        );
     }
 
     /// When a Kitty-compatible terminal (e.g. Ghostty) is detected inside tmux
