@@ -1231,11 +1231,13 @@ impl ImageCache {
                 pre_render_image(
                     &img,
                     protocol,
-                    content_width,
-                    max_rows,
-                    cell_metrics,
-                    bg,
-                    kitty_id,
+                    PreRenderParams {
+                        content_width,
+                        max_rows,
+                        cell_metrics,
+                        bg,
+                        kitty_id,
+                    },
                     terminology.as_ref(),
                 )
             }))
@@ -1876,20 +1878,30 @@ struct TerminologyCtx<'a> {
     temp_files: &'a Arc<Mutex<Vec<String>>>,
 }
 
-/// Pre-render an image for a specific protocol on a background thread.
-fn pre_render_image(
-    img: &DynamicImage,
-    protocol: ImageProtocol,
+#[derive(Clone, Copy)]
+struct PreRenderParams {
     content_width: usize,
     max_rows: usize,
     cell_metrics: CellMetrics,
     bg: (u8, u8, u8),
     kitty_id: u32,
+}
+
+/// Pre-render an image for a specific protocol on a background thread.
+fn pre_render_image(
+    img: &DynamicImage,
+    protocol: ImageProtocol,
+    params: PreRenderParams,
     terminology: Option<&TerminologyCtx<'_>>,
 ) -> Option<PreRenderedResult> {
     let (img_w, img_h) = img.dimensions();
-    let (cols, rows) =
-        calc_display_cells(img_w, img_h, content_width, max_rows, cell_metrics.aspect);
+    let (cols, rows) = calc_display_cells(
+        img_w,
+        img_h,
+        params.content_width,
+        params.max_rows,
+        params.cell_metrics.aspect,
+    );
 
     match protocol {
         ImageProtocol::Kitty => {
@@ -1897,7 +1909,7 @@ fn pre_render_image(
             let target_h = img_h.max(1);
             let png = encode_png(img)?;
             Some(PreRenderedResult::Kitty {
-                id: kitty_id,
+                id: params.kitty_id,
                 cols,
                 rows,
                 target_w,
@@ -1913,15 +1925,15 @@ fn pre_render_image(
             let rows = rows.min(DIACRITICS.len());
             let png = encode_png(img)?;
             Some(PreRenderedResult::KittyUnicode {
-                id: kitty_id,
+                id: params.kitty_id,
                 cols,
                 rows,
                 png,
             })
         }
         ImageProtocol::Iterm2 => {
-            let cell_w_px = scaled_cell_pixels(cell_metrics.cell_w_px);
-            let cell_h_px = scaled_cell_pixels(cell_metrics.cell_h_px);
+            let cell_w_px = scaled_cell_pixels(params.cell_metrics.cell_w_px);
+            let cell_h_px = scaled_cell_pixels(params.cell_metrics.cell_h_px);
             let target_w = (cols as u32).saturating_mul(cell_w_px).max(1);
             let target_h = (rows as u32).saturating_mul(cell_h_px).max(1);
             let resized = img.resize_exact(target_w, target_h, FilterType::Lanczos3);
@@ -1936,15 +1948,15 @@ fn pre_render_image(
             })
         }
         ImageProtocol::Sixel => {
-            let target_w = (cols as u32 * cell_metrics.cell_w_px).max(1);
-            let target_h = (rows as u32 * cell_metrics.cell_h_px).max(1);
+            let target_w = (cols as u32 * params.cell_metrics.cell_w_px).max(1);
+            let target_h = (rows as u32 * params.cell_metrics.cell_h_px).max(1);
             let resized = img.resize_exact(target_w, target_h, FilterType::Lanczos3);
-            let full_sixel = encode_sixel(&resized, bg);
+            let full_sixel = encode_sixel(&resized, params.bg);
             Some(PreRenderedResult::Sixel {
                 cols,
                 total_rows: rows,
-                cell_h_px: cell_metrics.cell_h_px,
-                bg,
+                cell_h_px: params.cell_metrics.cell_h_px,
+                bg: params.bg,
                 resized,
                 full_sixel,
             })
@@ -1962,7 +1974,14 @@ fn pre_render_image(
         ImageProtocol::Terminology => {
             let ctx = terminology
                 .expect("pre_render_image: Terminology protocol requires a TerminologyCtx");
-            pre_render_terminology(img, ctx.url, content_width, max_rows, cell_metrics).map(|ti| {
+            pre_render_terminology(
+                img,
+                ctx.url,
+                params.content_width,
+                params.max_rows,
+                params.cell_metrics,
+            )
+            .map(|ti| {
                 if ti.is_temp {
                     // Register the temp path in the shared registry *before* wrapping
                     // the result, so it is cleaned up even if the render channel is
@@ -2668,11 +2687,13 @@ mod tests {
         let rendered = pre_render_image(
             &img,
             ImageProtocol::Kitty,
-            20,
-            MAX_IMAGE_ROWS,
-            metrics,
-            (0, 0, 0),
-            1,
+            PreRenderParams {
+                content_width: 20,
+                max_rows: MAX_IMAGE_ROWS,
+                cell_metrics: metrics,
+                bg: (0, 0, 0),
+                kitty_id: 1,
+            },
             None,
         )
         .expect("pre-render should succeed");
@@ -2741,11 +2762,13 @@ mod tests {
         let rendered = pre_render_image(
             &img,
             ImageProtocol::Sixel,
-            20,
-            MAX_IMAGE_ROWS,
-            metrics,
-            (0, 0, 0),
-            1,
+            PreRenderParams {
+                content_width: 20,
+                max_rows: MAX_IMAGE_ROWS,
+                cell_metrics: metrics,
+                bg: (0, 0, 0),
+                kitty_id: 1,
+            },
             None,
         )
         .expect("pre-render should succeed");

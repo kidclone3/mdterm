@@ -13,17 +13,12 @@ use crate::style::{
 };
 use crate::theme::Theme;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MermaidRenderMode {
     Auto,
     Image,
+    #[default]
     Ascii,
-}
-
-impl Default for MermaidRenderMode {
-    fn default() -> Self {
-        Self::Ascii
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
