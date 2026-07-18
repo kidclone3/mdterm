@@ -87,6 +87,12 @@ pub struct CodeBlockContent {
     pub content: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct GeneratedImage {
+    pub key: String,
+    pub png: Vec<u8>,
+}
+
 /// Metadata returned alongside rendered lines
 pub struct DocumentInfo {
     pub code_blocks: Vec<CodeBlockContent>,
@@ -94,6 +100,7 @@ pub struct DocumentInfo {
     /// Lets the (feature-gated) POS coloring pass skip frontmatter.
     #[allow(dead_code)]
     pub frontmatter_lines: Option<usize>,
+    pub generated_images: Vec<GeneratedImage>,
 }
 
 pub fn wrap_lines(lines: &[Line], width: usize) -> Vec<Line> {
@@ -603,7 +610,23 @@ mod tests {
         let di = DocumentInfo {
             code_blocks: Vec::new(),
             frontmatter_lines: None,
+            generated_images: Vec::new(),
         };
         assert!(di.frontmatter_lines.is_none());
+    }
+
+    #[test]
+    fn document_info_tracks_generated_images() {
+        let di = DocumentInfo {
+            code_blocks: Vec::new(),
+            frontmatter_lines: None,
+            generated_images: vec![GeneratedImage {
+                key: "mdterm-generated://mermaid/abc".to_string(),
+                png: vec![137, 80, 78, 71],
+            }],
+        };
+
+        assert_eq!(di.generated_images.len(), 1);
+        assert_eq!(di.generated_images[0].key, "mdterm-generated://mermaid/abc");
     }
 }

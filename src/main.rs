@@ -13,7 +13,7 @@ mod viewer;
 use std::io::{self, IsTerminal, Read};
 use std::{fs, process};
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 
 #[derive(Parser)]
 #[command(
@@ -53,9 +53,46 @@ struct Cli {
     #[arg(long)]
     no_color: bool,
 
+    /// Mermaid rendering: auto, image, or ascii
+    #[arg(long, value_enum)]
+    mermaid_render: Option<MermaidRenderArg>,
+
     /// Part-of-speech highlighting (requires `pos` feature)
     #[arg(long, num_args = 0..=1, value_name = "CATEGORIES")]
     pos: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum MermaidRenderArg {
+    Auto,
+    Image,
+    Ascii,
+}
+
+impl From<MermaidRenderArg> for markdown::MermaidRenderMode {
+    fn from(value: MermaidRenderArg) -> Self {
+        match value {
+            MermaidRenderArg::Auto => markdown::MermaidRenderMode::Auto,
+            MermaidRenderArg::Image => markdown::MermaidRenderMode::Image,
+            MermaidRenderArg::Ascii => markdown::MermaidRenderMode::Ascii,
+        }
+    }
+}
+
+fn parse_mermaid_render_config(raw: &str) -> markdown::MermaidRenderMode {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "image" => markdown::MermaidRenderMode::Image,
+        "ascii" => markdown::MermaidRenderMode::Ascii,
+        _ => markdown::MermaidRenderMode::Auto,
+    }
+}
+
+fn resolve_mermaid_render_mode(
+    cli: Option<MermaidRenderArg>,
+    config_raw: &str,
+) -> markdown::MermaidRenderMode {
+    cli.map(Into::into)
+        .unwrap_or_else(|| parse_mermaid_render_config(config_raw))
 }
 
 mod pos_cli {
@@ -128,6 +165,7 @@ fn main() {
     } else {
         0
     };
+    let mermaid_render = resolve_mermaid_render_mode(cli.mermaid_render, &config.mermaid_render);
 
     // Resolve --pos: parse the CLI value (if any).
     let pos_arg_parsed = match &cli.pos {
@@ -232,6 +270,7 @@ fn main() {
             slide_mode: cli.slides,
             line_numbers,
             width_override: if width > 0 { Some(width) } else { None },
+            mermaid_render,
             pos_enabled,
             pos_categories,
         };
@@ -320,5 +359,29 @@ mod tests {
             Ok(PosArg::Some(v)) => assert_eq!(v, vec!["noun".to_string(), "verb".to_string()]),
             other => panic!("expected trimmed list, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn resolve_mermaid_render_prefers_cli() {
+        assert_eq!(
+            super::resolve_mermaid_render_mode(Some(super::MermaidRenderArg::Ascii), "image"),
+            crate::markdown::MermaidRenderMode::Ascii
+        );
+    }
+
+    #[test]
+    fn resolve_mermaid_render_uses_config_when_cli_absent() {
+        assert_eq!(
+            super::resolve_mermaid_render_mode(None, "image"),
+            crate::markdown::MermaidRenderMode::Image
+        );
+    }
+
+    #[test]
+    fn resolve_mermaid_render_defaults_invalid_config_to_auto() {
+        assert_eq!(
+            super::resolve_mermaid_render_mode(None, "bogus"),
+            crate::markdown::MermaidRenderMode::Auto
+        );
     }
 }

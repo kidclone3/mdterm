@@ -34,6 +34,7 @@ pub struct ViewerOptions {
     pub slide_mode: bool,
     pub line_numbers: bool,
     pub width_override: Option<usize>,
+    pub mermaid_render: crate::markdown::MermaidRenderMode,
     #[allow(dead_code)]
     pub pos_enabled: bool,
     #[allow(dead_code)]
@@ -307,6 +308,7 @@ struct ViewerState {
     slide_mode: bool,
     line_numbers: bool,
     width_override: Option<usize>,
+    mermaid_render: crate::markdown::MermaidRenderMode,
     #[cfg_attr(not(feature = "pos"), allow(dead_code))]
     pos_enabled: bool,
     #[cfg(feature = "pos")]
@@ -449,6 +451,7 @@ impl ViewerState {
             doc_info: DocumentInfo {
                 code_blocks: Vec::new(),
                 frontmatter_lines: None,
+                generated_images: Vec::new(),
             },
             offset: 0,
             h_offset: 0,
@@ -458,6 +461,7 @@ impl ViewerState {
             slide_mode: opts.slide_mode,
             line_numbers: opts.line_numbers,
             width_override: opts.width_override,
+            mermaid_render: opts.mermaid_render,
             pos_enabled: opts.pos_enabled,
             #[cfg(feature = "pos")]
             pos_categories: {
@@ -644,21 +648,27 @@ impl ViewerState {
                 }
             } else {
                 self.json_view = None;
-                crate::markdown::render_with(
+                crate::markdown::render_with_options(
                     &self.content,
                     cw,
                     &self.theme,
-                    self.line_numbers,
+                    crate::markdown::RenderOptions {
+                        line_numbers: self.line_numbers,
+                        mermaid_render: self.mermaid_render,
+                    },
                     &self.syntect_res,
                 )
             }
         } else {
             self.json_view = None;
-            crate::markdown::render_with(
+            crate::markdown::render_with_options(
                 &self.content,
                 cw,
                 &self.theme,
-                self.line_numbers,
+                crate::markdown::RenderOptions {
+                    line_numbers: self.line_numbers,
+                    mermaid_render: self.mermaid_render,
+                },
                 &self.syntect_res,
             )
         };
@@ -704,6 +714,11 @@ impl ViewerState {
         }
         // Avoid unused-variable warning when feature is off.
         let _ = &mut lines;
+
+        for generated in &doc_info.generated_images {
+            self.image_cache
+                .insert_generated_png(generated.key.clone(), generated.png.clone());
+        }
 
         self.wrapped = wrap_lines(&lines, cw);
         self.doc_info = doc_info;
@@ -4711,12 +4726,46 @@ mod tests {
             slide_mode: false,
             line_numbers: false,
             width_override: None,
+            mermaid_render: crate::markdown::MermaidRenderMode::Ascii,
             pos_enabled: false,
             pos_categories: Vec::new(),
         };
         let mut state = ViewerState::new(opts, 80, 24);
         state.wrapped = lines;
         state
+    }
+
+    #[test]
+    fn rebuild_inserts_generated_mermaid_image_without_fetch_queue() {
+        let opts = ViewerOptions {
+            files: vec![],
+            initial_content: "```mermaid\nflowchart TD\nA[Start] --> B[Done]\n```".to_string(),
+            filename: "test.md".to_string(),
+            theme: crate::theme::Theme::dark(),
+            slide_mode: false,
+            line_numbers: false,
+            width_override: Some(100),
+            pos_enabled: false,
+            pos_categories: Vec::new(),
+            mermaid_render: crate::markdown::MermaidRenderMode::Image,
+        };
+        let mut state = ViewerState::new(opts, 100, 24);
+        state.rebuild();
+
+        assert_eq!(state.doc_info.generated_images.len(), 1);
+        let key = state.doc_info.generated_images[0].key.clone();
+        assert!(state.image_cache.has_image(&key));
+        assert!(!state.pending_image_urls.iter().any(|url| url == &key));
+        assert!(state.wrapped.iter().any(|line| {
+            matches!(
+                line.meta,
+                LineMeta::Image {
+                    ref url,
+                    row: 0,
+                    ..
+                } if url == &key
+            )
+        }));
     }
 
     fn span(text: &str, link: Option<&str>) -> StyledSpan {

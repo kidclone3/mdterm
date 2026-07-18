@@ -3,6 +3,8 @@ use crate::theme::Theme;
 
 mod canvas;
 mod graph;
+mod merman;
+mod merman_image;
 mod sequence;
 mod theme;
 
@@ -31,6 +33,12 @@ pub enum DiagramError {
     /// drawing (a bug in the renderer, or pathological input). Caught via
     /// `catch_unwind` so one bad diagram cannot kill the TUI.
     RenderFailed { message: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct RenderedMermaidImage {
+    pub key: String,
+    pub png: Vec<u8>,
 }
 
 impl DiagramError {
@@ -131,6 +139,41 @@ pub fn render_mermaid(
 ) -> Result<(Vec<Vec<StyledSpan>>, usize), DiagramError> {
     let kw = first_diagram_keyword(code);
     match kw {
+        // Keep mdterm-native renderers where merman ASCII does not currently
+        // cover the diagram family.
+        Some("graph")
+        | Some("flowchart")
+        | Some("stateDiagram")
+        | Some("stateDiagram-v2")
+        | Some("mindmap") => render_mermaid_native(code, theme),
+        // Prefer merman for the families it supports, but preserve mdterm's
+        // current native fallback for syntax/features merman rejects.
+        Some("sequenceDiagram")
+        | Some("classDiagram")
+        | Some("classDiagram-v2")
+        | Some("erDiagram") => match merman::render(code, theme) {
+            Ok(rendered) => Ok(rendered),
+            Err(merman_err) => render_mermaid_native(code, theme).or(Err(merman_err)),
+        },
+        Some("xychart") | Some("xychart-beta") => merman::render(code, theme),
+        _ => render_mermaid_native(code, theme),
+    }
+}
+
+pub fn render_mermaid_image(
+    code: &str,
+    theme: &Theme,
+    width_cols: usize,
+) -> Result<RenderedMermaidImage, DiagramError> {
+    merman_image::render(code, theme, width_cols)
+}
+
+fn render_mermaid_native(
+    code: &str,
+    theme: &Theme,
+) -> Result<(Vec<Vec<StyledSpan>>, usize), DiagramError> {
+    let kw = first_diagram_keyword(code);
+    match kw {
         Some("sequenceDiagram") => dispatch("sequenceDiagram", || sequence::render(code, theme)),
         Some("stateDiagram") | Some("stateDiagram-v2") => {
             dispatch("stateDiagram", || graph::state::render(code, theme))
@@ -156,6 +199,98 @@ mod tests {
     fn unsupported_diagram_falls_back_to_source() {
         let theme = Theme::dark();
         assert!(render_mermaid("pie\n    \"A\" : 1", &theme).is_err());
+    }
+
+    #[test]
+    fn merman_image_renderer_returns_png_and_stable_key() {
+        let theme = Theme::dark();
+        let src = "flowchart TD\nA[Start] --> B[Done]";
+
+        let first = render_mermaid_image(src, &theme, 80).expect("first image render");
+        let second = render_mermaid_image(src, &theme, 80).expect("second image render");
+
+        assert_eq!(first.key, second.key);
+        assert!(first.key.starts_with("mdterm-generated://mermaid/"));
+        assert!(first.png.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
+        assert!(!first.png.is_empty());
+    }
+
+    #[test]
+    fn merman_image_key_changes_when_source_changes() {
+        let theme = Theme::dark();
+        let first =
+            render_mermaid_image("flowchart TD\nA --> B", &theme, 80).expect("first image render");
+        let second =
+            render_mermaid_image("flowchart TD\nA --> C", &theme, 80).expect("second image render");
+
+        assert_ne!(first.key, second.key);
+    }
+
+    #[test]
+    fn merman_supported_xychart_renders() {
+        let theme = Theme::dark();
+        let src = "xychart-beta\n  title \"Sales\"\n  x-axis [Jan, Feb, Mar]\n  y-axis \"Revenue\" 0 --> 100\n  bar [20, 45, 80]";
+
+        let (rows, width) = render_mermaid(src, &theme).expect("xychart should render via merman");
+        let rendered = rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|span| span.text.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(width > 0);
+        assert!(rendered.contains("Sales"), "got:\n{rendered}");
+        assert!(rendered.contains("Jan"), "got:\n{rendered}");
+        assert!(rendered.contains("Revenue"), "got:\n{rendered}");
+    }
+
+    #[test]
+    fn merman_failure_falls_back_to_native_class_renderer() {
+        let theme = Theme::dark();
+        let src = "classDiagram\n  class Order\n  class LineItem\n  Order \"1\" --> \"many\" LineItem : contains";
+
+        let (rows, width) =
+            render_mermaid(src, &theme).expect("native class renderer should remain fallback");
+        let rendered = rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|span| span.text.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(width > 0);
+        assert!(rendered.contains("Order"), "got:\n{rendered}");
+        assert!(rendered.contains("LineItem"), "got:\n{rendered}");
+        assert!(rendered.contains("contains"), "got:\n{rendered}");
+    }
+
+    #[test]
+    fn flowchart_dispatch_preserves_branch_node_labels() {
+        let theme = Theme::dark();
+        let src = "graph TD\n    A[Start] --> B{Decision}\n    B -->|Yes| C[Action 1]\n    B -->|No| D[Action 2]\n    C --> E[End]\n    D --> E";
+
+        let (rows, width) = render_mermaid(src, &theme).expect("flowchart should render");
+        let rendered = rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|span| span.text.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(width > 0);
+        assert!(rendered.contains("Action 1"), "got:\n{rendered}");
+        assert!(rendered.contains("Action 2"), "got:\n{rendered}");
+        assert!(rendered.contains("Decision"), "got:\n{rendered}");
     }
 
     #[test]

@@ -526,13 +526,12 @@ pub(crate) fn render(code: &str, theme: &Theme) -> Option<(Vec<Vec<StyledSpan>>,
 
 #[cfg(test)]
 mod tests {
-    use super::super::render_mermaid;
     use super::*;
     use crate::theme::Theme;
 
     fn seq_text(input: &str) -> String {
         let theme = Theme::dark();
-        let (rows, width) = render_mermaid(input, &theme).expect("sequence diagram should render");
+        let (rows, width) = render(input, &theme).expect("sequence diagram should render");
         assert!(width > 0, "rendered diagram should have positive width");
         rows.iter()
             .map(|row| {

@@ -27,15 +27,17 @@ Ten source files in `src/`:
 - **style.rs** — Data types (`Style`, `StyledSpan`, `Line`, `LineMeta`, `DocumentInfo`) and word-wrapping logic. `LineMeta` tracks heading/code-block/slide metadata through wrapping.
 - **viewer.rs** — Interactive TUI with multiple view modes (Normal, Search, TOC, LinkPicker, FuzzyHeading). Supports slide mode, auto-reload on file changes (via notify crate), multi-file switching, clipboard operations, regex search, overlay panels, and image rendering.
 - **theme.rs** — Two complete themes (dark/light) with 40+ color fields including overlay, math, image, and line number colors.
-- **config.rs** — Loads `~/.config/mdterm/config.toml` for persistent settings (theme, line_numbers, width).
+- **config.rs** — Loads `~/.config/mdterm/config.toml` for persistent settings (theme, line_numbers, width, mermaid_render, POS).
 - **export.rs** — HTML export with inline CSS matching the current theme.
-- **image.rs** — Terminal image rendering with three protocols: Kitty (ID-based upload/placement), iTerm2 (inline image sequences), and Unicode half-block fallback. Fetches images on background threads via `std::sync::mpsc` (non-blocking — `start_fetch()` spawns a thread per URL, `poll_completed()` drains results each event-loop tick). Also handles downscaling, caching, and terminal cell metric detection.
+- **image.rs** — Terminal image rendering with Kitty, Kitty Unicode, iTerm2, Sixel, Terminology, and Unicode half-block fallback protocols. Fetches remote images on background threads via `std::sync::mpsc` (non-blocking — `start_fetch()` spawns a thread per URL, `poll_completed()` drains results each event-loop tick), and accepts generated in-memory PNGs through `ImageCache::insert_generated_png()`. Also handles downscaling, caching, and terminal cell metric detection.
 - **json.rs** — JSON file viewer. Parses JSON and renders it with semantic coloring (keys, strings, numbers, booleans, nulls) and indented structure.
-- **diagram/** — Mermaid rendering module tree. Public API `render_mermaid()` returns `Result<_, DiagramError>` and dispatches by diagram keyword; each renderer runs under `catch_unwind` so a parse error or panic shows an inline error banner plus the original source instead of crashing the TUI. Sub-modules:
-  - `mod.rs` — dispatch + `is_unsupported_diagram` (still-pending types that render as raw source).
+- **diagram/** — Mermaid rendering module tree. Public APIs are `render_mermaid()` for ASCII/source fallback paths and `render_mermaid_image()` for local PNG generation. `render_mermaid()` dispatches by diagram keyword: merman backs `sequenceDiagram`, `classDiagram` / `classDiagram-v2`, `erDiagram`, and `xychart` / `xychart-beta`, with mdterm-native fallback for merman failures; `flowchart` / `graph`, `stateDiagram` / `stateDiagram-v2`, and `mindmap` stay on mdterm-native renderers. `render_mermaid_image()` uses merman's Rust raster pipeline and returns deterministic generated-image keys plus PNG bytes. Each renderer runs under `catch_unwind` so a parse error or panic shows an inline error banner plus the original source instead of crashing the TUI. Sub-modules:
+  - `mod.rs` — dispatch, `render_mermaid_image()`, and `is_unsupported_diagram` (still-pending types that render as raw source).
   - `canvas.rs` — `Canvas` (character grid), `CanvasCell`, `draw_node` / `draw_node_with_height` / `draw_card`, `draw_edge_td` / `draw_edge_lr` (dispatch on `EdgeStyle { dashed, head, tail, label, far_label }`), `draw_crowsfoot`, `draw_tree_edge`, `junction_char`, `to_span_rows`. The `NodeShape` enum covers Rectangle, Rounded, Diamond, Circle, Final (ringed dot for stateDiagram), ForkBar (stateDiagram).
   - `theme.rs` — `edge_color()` palette + per-family color tables.
-  - `sequence.rs` — `sequenceDiagram` parser + renderer (participants, messages, notes, self-loops, blocks).
+  - `merman.rs` — adapter from merman's headless ASCII/Unicode renderer into mdterm `StyledSpan` rows.
+  - `merman_image.rs` — adapter from merman's headless raster renderer into generated PNG bytes stored in `DocumentInfo.generated_images`.
+  - `sequence.rs` — mdterm-native `sequenceDiagram` parser + renderer retained as fallback (participants, messages, notes, self-loops, blocks).
   - `graph/mod.rs` — shared layout helpers: `assign_layers` (Kahn topological sort), `order_within_layers` (barycenter heuristic), `refine_lr_layer_order` (adjacent-swap refinement), `NodeLayout`, LR port/lane maps.
   - `graph/flowchart.rs` — `graph` / `flowchart` parser + TD/LR renderers ( reused as the layout backend by stateDiagram).
   - `graph/state.rs` — `stateDiagram` / `stateDiagram-v2` (composite states via sub-canvas stamping, fork/join bars, initial/final pseudo-states, notes).
@@ -61,7 +63,8 @@ Ten source files in `src/`:
 - **ureq 3** — Pure-Rust HTTP client for fetching remote images (replaces shelling out to `curl`)
 - **serde_json 1** — JSON parsing for the JSON file viewer
 - **notify 7** — Cross-platform filesystem watcher (inotify/FSEvents/kqueue) for auto-reload
+- **merman 0.7** — Headless Rust Mermaid parser, ASCII renderer, and raster PNG renderer used for supported diagram families
 
 ## Rust Edition
 
-Uses Rust edition 2024 (requires rustc 1.85+).
+Uses Rust edition 2024 (requires rustc 1.95+).
