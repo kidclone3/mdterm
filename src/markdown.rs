@@ -8,10 +8,33 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::diagram;
 use crate::style::{
-    BLOCKQUOTE_PREFIX, BLOCKQUOTE_PREFIX_TRIMMED, CodeBlockContent, DocumentInfo, Line, LineMeta,
-    Style, StyledSpan,
+    BLOCKQUOTE_PREFIX, BLOCKQUOTE_PREFIX_TRIMMED, CodeBlockContent, DocumentInfo, GeneratedImage,
+    Line, LineMeta, Style, StyledSpan,
 };
 use crate::theme::Theme;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MermaidRenderMode {
+    Auto,
+    Image,
+    #[default]
+    Ascii,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RenderOptions {
+    pub line_numbers: bool,
+    pub mermaid_render: MermaidRenderMode,
+}
+
+impl RenderOptions {
+    pub fn ascii(line_numbers: bool) -> Self {
+        Self {
+            line_numbers,
+            mermaid_render: MermaidRenderMode::Ascii,
+        }
+    }
+}
 
 struct Renderer<'a> {
     theme: &'a Theme,
@@ -19,6 +42,7 @@ struct Renderer<'a> {
     current_spans: Vec<StyledSpan>,
     width: usize,
     line_numbers: bool,
+    mermaid_render: MermaidRenderMode,
 
     // Inline style state
     bold: bool,
@@ -64,6 +88,7 @@ struct Renderer<'a> {
 
     // Document info
     code_blocks: Vec<CodeBlockContent>,
+    generated_images: Vec<GeneratedImage>,
 
     // Syntect (shared reference)
     syntax_set: &'a SyntaxSet,
@@ -81,7 +106,7 @@ impl<'a> Renderer<'a> {
         source: &'a str,
         width: usize,
         theme: &'a Theme,
-        line_numbers: bool,
+        options: RenderOptions,
         syntax_set: &'a SyntaxSet,
         theme_set: &'a ThemeSet,
     ) -> Self {
@@ -90,7 +115,8 @@ impl<'a> Renderer<'a> {
             lines: Vec::new(),
             current_spans: Vec::new(),
             width,
-            line_numbers,
+            line_numbers: options.line_numbers,
+            mermaid_render: options.mermaid_render,
             bold: false,
             italic: false,
             strikethrough: false,
@@ -120,6 +146,7 @@ impl<'a> Renderer<'a> {
             image_url: String::new(),
             image_alt: String::new(),
             code_blocks: Vec::new(),
+            generated_images: Vec::new(),
             syntax_set,
             theme_set,
         }
@@ -243,11 +270,7 @@ impl<'a> Renderer<'a> {
         // Check for special diagram blocks
         let is_diagram = matches!(lang.as_str(), "mermaid" | "plantuml" | "dot" | "graphviz");
 
-        // Try to render mermaid diagrams visually
-        if lang == "mermaid"
-            && let Some((diagram_rows, diagram_width)) = diagram::render_mermaid(&code, self.theme)
-        {
-            self.emit_diagram_block(block_id, &diagram_rows, diagram_width);
+        if lang == "mermaid" && self.emit_mermaid_block(block_id, &code) {
             return;
         }
 
@@ -522,6 +545,64 @@ impl<'a> Renderer<'a> {
             }],
             meta: LineMeta::DiagramContent { block_id },
         });
+    }
+
+    fn emit_image_block(&mut self, url: &str, alt: &str) {
+        self.flush_line();
+        let total_rows = crate::image::IMAGE_ROWS;
+
+        for row in 0..total_rows {
+            self.lines.push(Line {
+                spans: vec![],
+                meta: LineMeta::Image {
+                    url: url.to_string(),
+                    alt: alt.to_string(),
+                    row,
+                    total_rows,
+                },
+            });
+        }
+
+        self.push_span(
+            &format!("  {alt}"),
+            Style {
+                fg: Some(self.theme.image_fg),
+                dim: true,
+                italic: true,
+                link_url: (!url.is_empty()).then(|| url.to_string()),
+                ..Default::default()
+            },
+        );
+        self.flush_line();
+    }
+
+    fn emit_mermaid_block(&mut self, block_id: usize, code: &str) -> bool {
+        match self.mermaid_render {
+            MermaidRenderMode::Ascii => self.emit_mermaid_ascii(block_id, code),
+            MermaidRenderMode::Auto => self
+                .emit_mermaid_image(code)
+                .unwrap_or_else(|_| self.emit_mermaid_ascii(block_id, code)),
+            MermaidRenderMode::Image => self.emit_mermaid_image(code).unwrap_or(false),
+        }
+    }
+
+    fn emit_mermaid_ascii(&mut self, block_id: usize, code: &str) -> bool {
+        let Some((diagram_rows, diagram_width)) = diagram::render_mermaid(code, self.theme) else {
+            return false;
+        };
+        self.emit_diagram_block(block_id, &diagram_rows, diagram_width);
+        true
+    }
+
+    fn emit_mermaid_image(&mut self, code: &str) -> Result<bool, String> {
+        let rendered = diagram::render_mermaid_image(code, self.theme, self.width)?;
+        let key = rendered.key.clone();
+        self.generated_images.push(GeneratedImage {
+            key: rendered.key,
+            png: rendered.png,
+        });
+        self.emit_image_block(&key, "mermaid diagram");
+        Ok(true)
     }
 
     fn emit_table(&mut self) {
@@ -929,42 +1010,7 @@ impl<'a> Renderer<'a> {
                     std::mem::take(&mut self.image_alt)
                 };
                 let url = std::mem::take(&mut self.image_url);
-
-                // Flush any pending content
-                self.flush_line();
-
-                let total_rows = crate::image::IMAGE_ROWS;
-
-                // Push placeholder lines for the image
-                for row in 0..total_rows {
-                    self.lines.push(Line {
-                        spans: vec![],
-                        meta: LineMeta::Image {
-                            url: url.clone(),
-                            alt: alt.clone(),
-                            row,
-                            total_rows,
-                        },
-                    });
-                }
-
-                // Caption line below the image
-                self.push_span(
-                    &format!("  {}", alt),
-                    Style {
-                        fg: Some(self.theme.image_fg),
-                        dim: true,
-                        italic: true,
-                        link_url: if url.is_empty() {
-                            None
-                        } else {
-                            Some(url.clone())
-                        },
-                        ..Default::default()
-                    },
-                );
-                self.flush_line();
-
+                self.emit_image_block(&url, &alt);
                 self.in_image = false;
             }
 
@@ -1565,11 +1611,27 @@ pub fn render_with(
     line_numbers: bool,
     syntect_res: &SyntectRes,
 ) -> (Vec<Line>, DocumentInfo) {
+    render_with_options(
+        input,
+        width,
+        theme,
+        RenderOptions::ascii(line_numbers),
+        syntect_res,
+    )
+}
+
+pub fn render_with_options(
+    input: &str,
+    width: usize,
+    theme: &Theme,
+    options: RenderOptions,
+    syntect_res: &SyntectRes,
+) -> (Vec<Line>, DocumentInfo) {
     let mut renderer = Renderer::new(
         input,
         width,
         theme,
-        line_numbers,
+        options,
         &syntect_res.syntax_set,
         &syntect_res.theme_set,
     );
@@ -1590,6 +1652,7 @@ pub fn render_with(
 
     let doc_info = DocumentInfo {
         code_blocks: renderer.code_blocks,
+        generated_images: renderer.generated_images,
     };
 
     (renderer.lines, doc_info)
@@ -1604,6 +1667,21 @@ mod tests {
     fn render_test(input: &str) -> (Vec<Line>, DocumentInfo) {
         let theme = Theme::dark();
         render(input, 80, &theme, false)
+    }
+
+    fn render_mermaid_mode(input: &str, mode: MermaidRenderMode) -> (Vec<Line>, DocumentInfo) {
+        let theme = Theme::dark();
+        let resources = SyntectRes::load();
+        render_with_options(
+            input,
+            80,
+            &theme,
+            RenderOptions {
+                line_numbers: false,
+                mermaid_render: mode,
+            },
+            &resources,
+        )
     }
 
     fn line_text(line: &Line) -> String {
@@ -1765,6 +1843,37 @@ mod tests {
             panic!("expected LineMeta::Image");
         };
         assert_eq!(alt, "image");
+    }
+
+    #[test]
+    fn mermaid_image_mode_emits_generated_image() {
+        let input = "```mermaid\nflowchart TD\nA --> B\n```";
+        let (lines, doc_info) = render_mermaid_mode(input, MermaidRenderMode::Image);
+
+        assert_eq!(doc_info.generated_images.len(), 1);
+        assert!(
+            doc_info.generated_images[0]
+                .png
+                .starts_with(&[137, 80, 78, 71])
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| matches!(line.meta, LineMeta::Image { .. }))
+        );
+    }
+
+    #[test]
+    fn mermaid_ascii_mode_does_not_generate_an_image() {
+        let input = "```mermaid\nflowchart TD\nA --> B\n```";
+        let (lines, doc_info) = render_mermaid_mode(input, MermaidRenderMode::Ascii);
+
+        assert!(doc_info.generated_images.is_empty());
+        assert!(
+            lines
+                .iter()
+                .any(|line| matches!(line.meta, LineMeta::DiagramContent { .. }))
+        );
     }
 
     // ── Lists ───────────────────────────────────────────────────────────────

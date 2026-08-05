@@ -24,7 +24,7 @@ A terminal-based Markdown viewer written in Rust. Renders Markdown files with sy
 - **Local file links** — Click or select relative markdown links to navigate between files, with `Backspace` to go back
 - **Link picker** — Press `f` to list all links, type a number to open in browser
 - **Click-to-copy** — Click any heading section, list, or code block to copy it; `Y` copies full document, `c` copies nearest code block
-- **Mermaid diagrams** — Visual rendering of flowcharts/graphs in the terminal with box-drawing characters
+- **Mermaid diagrams** — Interactive terminals render local PNGs through merman and the existing image protocols; use `--mermaid-render ascii` for box-drawing output
 - **Math rendering** — LaTeX to Unicode: `$\alpha + \beta$` renders as `α + β`
 - **Slide mode** — `--slides` treats `---` as slide separators for terminal presentations
 - **Auto-reload** — Automatically detects file changes and reloads (via inotify/FSEvents/kqueue)
@@ -40,7 +40,7 @@ A terminal-based Markdown viewer written in Rust. Renders Markdown files with sy
 
 ## Installation
 
-Requires Rust 1.85+ (edition 2024).
+Requires Rust 1.95+ (edition 2024).
 
 ```bash
 cargo install --path .
@@ -57,6 +57,7 @@ mdterm --slides deck.md             # slide mode
 mdterm --export html doc.md > out.html  # export to HTML
 mdterm --theme light README.md      # light theme
 mdterm -l README.md                 # line numbers in code blocks
+mdterm --mermaid-render image doc.md  # force local PNG rendering
 ```
 
 When piped, mdterm outputs styled text without the interactive viewer:
@@ -128,6 +129,7 @@ Create `~/.config/mdterm/config.toml`:
 theme = "dark"          # "dark" or "light"
 line_numbers = false     # show line numbers in code blocks
 width = 0               # display width (0 = auto)
+mermaid_render = "auto" # "auto", "image", or "ascii"
 ```
 
 CLI flags override config file settings.
@@ -147,6 +149,7 @@ Options:
   -l, --line-numbers       Show line numbers in code blocks
       --export <FORMAT>    Export format (html)
       --no-color           Disable colors
+      --mermaid-render <MERMAID_RENDER>  Mermaid rendering: auto, image, or ascii
   -h, --help               Print help
   -V, --version            Print version
 ```

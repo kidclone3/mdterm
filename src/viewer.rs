@@ -34,6 +34,7 @@ pub struct ViewerOptions {
     pub slide_mode: bool,
     pub line_numbers: bool,
     pub width_override: Option<usize>,
+    pub mermaid_render: crate::markdown::MermaidRenderMode,
 }
 
 pub fn run(opts: ViewerOptions) -> io::Result<()> {
@@ -303,6 +304,7 @@ struct ViewerState {
     slide_mode: bool,
     line_numbers: bool,
     width_override: Option<usize>,
+    mermaid_render: crate::markdown::MermaidRenderMode,
 
     // Mode
     mode: ViewMode,
@@ -413,6 +415,7 @@ impl ViewerState {
             wrapped: Vec::new(),
             doc_info: DocumentInfo {
                 code_blocks: Vec::new(),
+                generated_images: Vec::new(),
             },
             offset: 0,
             h_offset: 0,
@@ -422,6 +425,7 @@ impl ViewerState {
             slide_mode: opts.slide_mode,
             line_numbers: opts.line_numbers,
             width_override: opts.width_override,
+            mermaid_render: opts.mermaid_render,
             mode: ViewMode::Normal,
             search: SearchState::new(),
             toc_entries: Vec::new(),
@@ -562,21 +566,27 @@ impl ViewerState {
                 }
             } else {
                 self.json_view = None;
-                crate::markdown::render_with(
+                crate::markdown::render_with_options(
                     &self.content,
                     cw,
                     &self.theme,
-                    self.line_numbers,
+                    crate::markdown::RenderOptions {
+                        line_numbers: self.line_numbers,
+                        mermaid_render: self.mermaid_render,
+                    },
                     &self.syntect_res,
                 )
             }
         } else {
             self.json_view = None;
-            crate::markdown::render_with(
+            crate::markdown::render_with_options(
                 &self.content,
                 cw,
                 &self.theme,
-                self.line_numbers,
+                crate::markdown::RenderOptions {
+                    line_numbers: self.line_numbers,
+                    mermaid_render: self.mermaid_render,
+                },
                 &self.syntect_res,
             )
         };
@@ -597,6 +607,11 @@ impl ViewerState {
                 }
                 entry.push_str(&text);
             }
+        }
+
+        for generated in &doc_info.generated_images {
+            self.image_cache
+                .insert_generated_png(generated.key.clone(), generated.png.clone());
         }
 
         self.wrapped = wrap_lines(&lines, cw);
@@ -2689,13 +2704,10 @@ fn render_frame(stdout: &mut io::Stdout, state: &mut ViewerState) -> io::Result<
                     let fill_bg = if is_json_cursor {
                         Some(line_bg)
                     } else {
-                        line.spans.first().and_then(|s| s.style.bg).and_then(|bg| {
-                            if line.spans.iter().all(|s| s.style.bg == Some(bg)) {
-                                Some(bg)
-                            } else {
-                                None
-                            }
-                        })
+                        line.spans
+                            .first()
+                            .and_then(|s| s.style.bg)
+                            .filter(|&bg| line.spans.iter().all(|s| s.style.bg == Some(bg)))
                     };
                     if let Some(bg) = fill_bg {
                         queue!(
@@ -4355,6 +4367,7 @@ mod tests {
             slide_mode: false,
             line_numbers: false,
             width_override: None,
+            mermaid_render: crate::markdown::MermaidRenderMode::Ascii,
         };
         let mut state = ViewerState::new(opts, 80, 24);
         state.wrapped = lines;

@@ -3,6 +3,21 @@ use crate::theme::Theme;
 use crossterm::style::Color;
 use std::collections::{HashMap, HashSet, VecDeque};
 
+mod merman_image;
+
+pub struct RenderedMermaidImage {
+    pub key: String,
+    pub png: Vec<u8>,
+}
+
+pub fn render_mermaid_image(
+    code: &str,
+    theme: &Theme,
+    width_cols: usize,
+) -> Result<RenderedMermaidImage, String> {
+    merman_image::render(code, theme, width_cols)
+}
+
 // ───── Data types ─────
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2069,10 +2084,8 @@ fn parse_seq_note(line: &str, parts: &mut Vec<SeqParticipant>) -> Option<SeqEven
         (NotePlacement::RightOf, r)
     } else if let Some(r) = spec.strip_prefix("left of ") {
         (NotePlacement::LeftOf, r)
-    } else if let Some(r) = spec.strip_prefix("over ") {
-        (NotePlacement::Over, r)
     } else {
-        return None;
+        (NotePlacement::Over, spec.strip_prefix("over ")?)
     };
     let mut idxs: Vec<usize> = targets
         .split(',')
