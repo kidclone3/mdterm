@@ -84,9 +84,16 @@ pub struct CodeBlockContent {
     pub content: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct GeneratedImage {
+    pub key: String,
+    pub png: Vec<u8>,
+}
+
 /// Metadata returned alongside rendered lines
 pub struct DocumentInfo {
     pub code_blocks: Vec<CodeBlockContent>,
+    pub generated_images: Vec<GeneratedImage>,
 }
 
 pub fn wrap_lines(lines: &[Line], width: usize) -> Vec<Line> {

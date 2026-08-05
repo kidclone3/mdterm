@@ -59,6 +59,50 @@ fn tmux_allows_passthrough() -> bool {
         })
 }
 
+fn kitty_compatible_term(term: &str) -> bool {
+    term == "xterm-ghostty" || term == "xterm-kitty"
+}
+
+fn tmux_client_termname() -> Option<String> {
+    let out = std::process::Command::new("tmux")
+        .args(["display-message", "-p", "#{client_termname}"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let termname = String::from_utf8(out.stdout).ok()?;
+    let termname = termname.trim();
+    (!termname.is_empty()).then(|| termname.to_string())
+}
+
+fn tmux_passthrough_protocol(
+    term_program: Option<&str>,
+    lc_terminal: Option<&str>,
+    term: Option<&str>,
+    kitty_window_id: bool,
+    konsole_version: bool,
+    client_termname: Option<&str>,
+) -> Option<ImageProtocol> {
+    match term_program {
+        Some("ghostty" | "WezTerm") => return Some(ImageProtocol::KittyUnicode),
+        Some("iTerm.app") => return Some(ImageProtocol::Iterm2),
+        _ => {}
+    }
+
+    if lc_terminal == Some("iTerm2") {
+        return Some(ImageProtocol::Iterm2);
+    }
+    if term.is_some_and(kitty_compatible_term)
+        || kitty_window_id
+        || konsole_version
+        || client_termname.is_some_and(kitty_compatible_term)
+    {
+        return Some(ImageProtocol::KittyUnicode);
+    }
+    None
+}
+
 /// Parse the running tmux version string into (major, minor).
 /// Handles version strings like "tmux 3.3a", "tmux 3.4", "tmux next-3.5".
 fn tmux_version() -> Option<(u32, u32)> {
@@ -175,27 +219,19 @@ pub fn detect_protocol() -> ImageProtocol {
     if in_tmux {
         let passthrough_ok = tmux_allows_passthrough();
         if passthrough_ok {
-            if let Ok(term) = std::env::var("TERM_PROGRAM") {
-                match term.as_str() {
-                    "ghostty" | "WezTerm" => return ImageProtocol::KittyUnicode,
-                    "iTerm.app" => return ImageProtocol::Iterm2,
-                    _ => {}
-                }
-            }
-            // LC_TERMINAL is another way iTerm2 identifies itself.
-            if std::env::var("LC_TERMINAL").ok().as_deref() == Some("iTerm2") {
-                return ImageProtocol::Iterm2;
-            }
-            if let Ok(term) = std::env::var("TERM")
-                && (term == "xterm-ghostty" || term == "xterm-kitty")
-            {
-                return ImageProtocol::KittyUnicode;
-            }
-            if std::env::var("KITTY_WINDOW_ID").is_ok() {
-                return ImageProtocol::KittyUnicode;
-            }
-            if std::env::var("KONSOLE_VERSION").is_ok() {
-                return ImageProtocol::KittyUnicode;
+            let term_program = std::env::var("TERM_PROGRAM").ok();
+            let lc_terminal = std::env::var("LC_TERMINAL").ok();
+            let term = std::env::var("TERM").ok();
+            let client_termname = tmux_client_termname();
+            if let Some(protocol) = tmux_passthrough_protocol(
+                term_program.as_deref(),
+                lc_terminal.as_deref(),
+                term.as_deref(),
+                std::env::var("KITTY_WINDOW_ID").is_ok(),
+                std::env::var("KONSOLE_VERSION").is_ok(),
+                client_termname.as_deref(),
+            ) {
+                return protocol;
             }
         }
         // Either passthrough is disabled or no recognised Kitty-Unicode /
@@ -725,6 +761,24 @@ const MAX_IMAGE_ROWS: usize = 20;
 
 /// Max source dimension before downscaling
 const MAX_SOURCE_DIM: u32 = 2000;
+const GENERATED_MERMAID_PREFIX: &str = "mdterm-generated://mermaid/";
+const GENERATED_MERMAID_MAX_SOURCE_DIM: u32 = 4096;
+const GENERATED_MERMAID_MAX_IMAGE_ROWS: usize = 40;
+const CELL_PLACED_PROTOCOL_PIXEL_SCALE: u32 = 2;
+
+fn image_row_limit(url: &str) -> usize {
+    if url.starts_with(GENERATED_MERMAID_PREFIX) {
+        GENERATED_MERMAID_MAX_IMAGE_ROWS
+    } else {
+        MAX_IMAGE_ROWS
+    }
+}
+
+fn scaled_cell_pixels(cell_px: u32) -> u32 {
+    cell_px
+        .saturating_mul(CELL_PLACED_PROTOCOL_PIXEL_SCALE)
+        .max(1)
+}
 
 // ── Image cache ─────────────────────────────────────────────────────────────
 
@@ -964,6 +1018,16 @@ impl ImageCache {
         self.images.contains_key(url) || self.in_flight.contains(url)
     }
 
+    pub fn insert_generated_png(&mut self, key: String, bytes: Vec<u8>) -> bool {
+        let decoded = image::load_from_memory(&bytes)
+            .ok()
+            .map(|img| downscale(img, GENERATED_MERMAID_MAX_SOURCE_DIM))
+            .map(Arc::new);
+        let ok = decoded.is_some();
+        self.images.insert(key, decoded);
+        ok
+    }
+
     /// Maximum number of concurrent background fetches.
     const MAX_CONCURRENT_FETCHES: usize = 10;
 
@@ -1055,7 +1119,7 @@ impl ImageCache {
     }
 
     pub fn ideal_rows(&self, url: &str, content_width: usize) -> Option<usize> {
-        let (_, rows) = self.display_size(url, content_width, MAX_IMAGE_ROWS)?;
+        let (_, rows) = self.display_size(url, content_width, image_row_limit(url))?;
         Some(rows)
     }
 
@@ -1104,6 +1168,7 @@ impl ImageCache {
         let url_owned = url.to_string();
         let protocol = self.protocol;
         let cell_metrics = self.cell_metrics;
+        let max_rows = image_row_limit(url);
 
         let kitty_id = if matches!(protocol, ImageProtocol::Kitty | ImageProtocol::KittyUnicode) {
             self.next_kitty_id = self.next_kitty_id.wrapping_add(1);
@@ -1144,10 +1209,13 @@ impl ImageCache {
                 pre_render_image(
                     &img,
                     protocol,
-                    content_width,
-                    cell_metrics,
-                    bg,
-                    kitty_id,
+                    PreRenderParams {
+                        content_width,
+                        max_rows,
+                        cell_metrics,
+                        bg,
+                        kitty_id,
+                    },
                     terminology.as_ref(),
                 )
             }))
@@ -1788,38 +1856,43 @@ struct TerminologyCtx<'a> {
     temp_files: &'a Arc<Mutex<Vec<String>>>,
 }
 
+#[derive(Clone, Copy)]
+struct PreRenderParams {
+    content_width: usize,
+    max_rows: usize,
+    cell_metrics: CellMetrics,
+    bg: (u8, u8, u8),
+    kitty_id: u32,
+}
+
 /// Pre-render an image for a specific protocol on a background thread.
 fn pre_render_image(
     img: &DynamicImage,
     protocol: ImageProtocol,
-    content_width: usize,
-    cell_metrics: CellMetrics,
-    bg: (u8, u8, u8),
-    kitty_id: u32,
+    params: PreRenderParams,
     terminology: Option<&TerminologyCtx<'_>>,
 ) -> Option<PreRenderedResult> {
     let (img_w, img_h) = img.dimensions();
     let (cols, rows) = calc_display_cells(
         img_w,
         img_h,
-        content_width,
-        MAX_IMAGE_ROWS,
-        cell_metrics.aspect,
+        params.content_width,
+        params.max_rows,
+        params.cell_metrics.aspect,
     );
 
     match protocol {
         ImageProtocol::Kitty => {
-            let target_w = (cols as u32 * cell_metrics.cell_w_px).max(1);
-            let target_h = (rows as u32 * cell_metrics.cell_h_px).max(1);
-            let resized = img.resize_exact(target_w, target_h, FilterType::Lanczos3);
-            let png = encode_png(&resized)?;
+            let target_w = img_w.max(1);
+            let target_h = img_h.max(1);
+            let png = encode_png(img)?;
             Some(PreRenderedResult::Kitty {
-                id: kitty_id,
+                id: params.kitty_id,
                 cols,
                 rows,
                 target_w,
                 target_h,
-                cell_h_px: cell_metrics.cell_h_px,
+                cell_h_px: target_h.div_ceil(rows as u32).max(1),
                 png,
             })
         }
@@ -1828,41 +1901,40 @@ fn pre_render_image(
             // needs a combining diacritic and we only have 256 entries.
             let cols = cols.min(DIACRITICS.len());
             let rows = rows.min(DIACRITICS.len());
-            let target_w = (cols as u32 * cell_metrics.cell_w_px).max(1);
-            let target_h = (rows as u32 * cell_metrics.cell_h_px).max(1);
-            let resized = img.resize_exact(target_w, target_h, FilterType::Lanczos3);
-            let png = encode_png(&resized)?;
+            let png = encode_png(img)?;
             Some(PreRenderedResult::KittyUnicode {
-                id: kitty_id,
+                id: params.kitty_id,
                 cols,
                 rows,
                 png,
             })
         }
         ImageProtocol::Iterm2 => {
-            let target_w = (cols as u32 * cell_metrics.cell_w_px).max(1);
-            let target_h = (rows as u32 * cell_metrics.cell_h_px).max(1);
+            let cell_w_px = scaled_cell_pixels(params.cell_metrics.cell_w_px);
+            let cell_h_px = scaled_cell_pixels(params.cell_metrics.cell_h_px);
+            let target_w = (cols as u32).saturating_mul(cell_w_px).max(1);
+            let target_h = (rows as u32).saturating_mul(cell_h_px).max(1);
             let resized = img.resize_exact(target_w, target_h, FilterType::Lanczos3);
             let png = encode_png(&resized)?;
             let full_base64 = BASE64.encode(png);
             Some(PreRenderedResult::Iterm2 {
                 cols,
                 total_rows: rows,
-                cell_h_px: cell_metrics.cell_h_px,
+                cell_h_px,
                 resized,
                 full_base64,
             })
         }
         ImageProtocol::Sixel => {
-            let target_w = (cols as u32 * cell_metrics.cell_w_px).max(1);
-            let target_h = (rows as u32 * cell_metrics.cell_h_px).max(1);
+            let target_w = (cols as u32 * params.cell_metrics.cell_w_px).max(1);
+            let target_h = (rows as u32 * params.cell_metrics.cell_h_px).max(1);
             let resized = img.resize_exact(target_w, target_h, FilterType::Lanczos3);
-            let full_sixel = encode_sixel(&resized, bg);
+            let full_sixel = encode_sixel(&resized, params.bg);
             Some(PreRenderedResult::Sixel {
                 cols,
                 total_rows: rows,
-                cell_h_px: cell_metrics.cell_h_px,
-                bg,
+                cell_h_px: params.cell_metrics.cell_h_px,
+                bg: params.bg,
                 resized,
                 full_sixel,
             })
@@ -1880,7 +1952,14 @@ fn pre_render_image(
         ImageProtocol::Terminology => {
             let ctx = terminology
                 .expect("pre_render_image: Terminology protocol requires a TerminologyCtx");
-            pre_render_terminology(img, ctx.url, content_width, cell_metrics).map(|ti| {
+            pre_render_terminology(
+                img,
+                ctx.url,
+                params.content_width,
+                params.max_rows,
+                params.cell_metrics,
+            )
+            .map(|ti| {
                 if ti.is_temp {
                     // Register the temp path in the shared registry *before* wrapping
                     // the result, so it is cleaned up even if the render channel is
@@ -1962,16 +2041,12 @@ fn pre_render_terminology(
     img: &DynamicImage,
     url: &str,
     content_width: usize,
+    max_rows: usize,
     cell_metrics: CellMetrics,
 ) -> Option<TerminologyImage> {
     let (img_w, img_h) = img.dimensions();
-    let (cols, rows) = calc_display_cells(
-        img_w,
-        img_h,
-        content_width,
-        MAX_IMAGE_ROWS,
-        cell_metrics.aspect,
-    );
+    let (cols, rows) =
+        calc_display_cells(img_w, img_h, content_width, max_rows, cell_metrics.aspect);
     // Terminology hard limit: both width and height must be < 512 (from tycat.c:
     // `if ((w >= 512) || (h >= 512)) return;`). Also ensure neither is zero.
     let cols = (cols as u32).clamp(1, 511);
@@ -2023,8 +2098,12 @@ fn pre_render_terminology(
     }
 
     // Remote image (or local path no longer on disk): resize and write a temp file.
-    let target_w = (cols * cell_metrics.cell_w_px).max(1);
-    let target_h = (rows * cell_metrics.cell_h_px).max(1);
+    let target_w = cols
+        .saturating_mul(scaled_cell_pixels(cell_metrics.cell_w_px))
+        .max(1);
+    let target_h = rows
+        .saturating_mul(scaled_cell_pixels(cell_metrics.cell_h_px))
+        .max(1);
     let resized = img.resize_exact(target_w, target_h, FilterType::Lanczos3);
 
     // Create a per-process private temp directory (mode 0700 on Unix) so that
@@ -2252,6 +2331,16 @@ mod tests {
     // Shared mutex for tests that manipulate process-global env vars.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    fn png_bytes(img: &DynamicImage) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        bytes
+    }
+
     // ── has_attempted / has_image ────────────────────────────────────────────
 
     #[test]
@@ -2312,6 +2401,34 @@ mod tests {
 
         assert!(cache.has_attempted("fail"));
         assert!(!cache.has_image("fail"));
+    }
+
+    #[test]
+    fn insert_generated_png_caches_image_without_fetching() {
+        let mut cache = ImageCache::new();
+        let key = "mdterm-generated://mermaid/test".to_string();
+
+        assert!(cache.insert_generated_png(key.clone(), png_bytes(&DynamicImage::new_rgb8(4, 3))));
+        assert!(cache.has_attempted(&key));
+        assert!(cache.has_image(&key));
+        assert_eq!(cache.image_dimensions(&key), Some((4, 3)));
+        assert_eq!(cache.in_flight_count(), 0);
+    }
+
+    #[test]
+    fn generated_mermaid_images_get_larger_row_budget() {
+        let mut cache = ImageCache::new();
+        cache.cell_metrics = CellMetrics {
+            aspect: 2.0,
+            cell_w_px: 8,
+            cell_h_px: 16,
+        };
+        let key = "mdterm-generated://mermaid/tall".to_string();
+        assert!(
+            cache.insert_generated_png(key.clone(), png_bytes(&DynamicImage::new_rgb8(800, 800)))
+        );
+
+        assert_eq!(cache.ideal_rows(&key, 80), Some(40));
     }
 
     // ── fetch_if_missing idempotency ─────────────────────────────────────────
@@ -2486,6 +2603,43 @@ mod tests {
         let (cols, rows) = calc_display_cells(100, 1000, 80, 10, 2.0);
         assert!(rows <= 10);
         assert!(cols >= 1);
+    }
+
+    #[test]
+    fn kitty_prerender_preserves_source_pixels() {
+        let img = DynamicImage::new_rgb8(100, 50);
+        let rendered = pre_render_image(
+            &img,
+            ImageProtocol::Kitty,
+            PreRenderParams {
+                content_width: 20,
+                max_rows: MAX_IMAGE_ROWS,
+                cell_metrics: CellMetrics {
+                    aspect: 2.0,
+                    cell_w_px: 8,
+                    cell_h_px: 16,
+                },
+                bg: (0, 0, 0),
+                kitty_id: 1,
+            },
+            None,
+        )
+        .expect("pre-render should succeed");
+
+        let PreRenderedResult::Kitty {
+            target_w,
+            target_h,
+            png,
+            ..
+        } = rendered
+        else {
+            panic!("expected Kitty pre-render result");
+        };
+        assert_eq!((target_w, target_h), (100, 50));
+        assert_eq!(
+            image::load_from_memory(&png).unwrap().dimensions(),
+            (100, 50)
+        );
     }
 
     // ── blend_alpha ─────────────────────────────────────────────────────────
@@ -3020,6 +3174,21 @@ mod tests {
         // _env restores all saved vars on drop.
     }
 
+    #[test]
+    fn tmux_passthrough_detects_kitty_from_client_termname() {
+        assert_eq!(
+            tmux_passthrough_protocol(
+                Some("tmux"),
+                None,
+                Some("tmux-256color"),
+                false,
+                false,
+                Some("xterm-kitty"),
+            ),
+            Some(ImageProtocol::KittyUnicode)
+        );
+    }
+
     /// When a Kitty-compatible terminal (e.g. Ghostty) is detected inside tmux
     /// but `tmux show-options` does NOT confirm `allow-passthrough on`, the
     /// protocol must fall back to `HalfBlock`.  Without passthrough, tmux drops
@@ -3103,7 +3272,7 @@ mod tests {
         assert!(
             buf.windows(header_prefix.len()).any(|w| w == header_prefix),
             "header not found in output.\nGot (hex): {:?}",
-            &buf
+            buf
         );
 
         // ── Check placeholder rows ────────────────────────────────────────
@@ -3181,7 +3350,7 @@ mod tests {
             .map(|rd| rd.flatten().count())
             .unwrap_or(0);
 
-        let result = pre_render_terminology(&img, source_path_str, 80, metrics)
+        let result = pre_render_terminology(&img, source_path_str, 80, MAX_IMAGE_ROWS, metrics)
             .expect("pre_render_terminology returned None for a local path within cwd");
 
         let after_count = std::fs::read_dir(&priv_dir)

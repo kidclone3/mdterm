@@ -10,10 +10,16 @@ pub struct Config {
     pub line_numbers: bool,
     #[serde(default)]
     pub width: usize,
+    #[serde(default = "default_mermaid_render")]
+    pub mermaid_render: String,
 }
 
 fn default_theme() -> String {
     "dark".to_string()
+}
+
+fn default_mermaid_render() -> String {
+    "auto".to_string()
 }
 
 impl Default for Config {
@@ -22,6 +28,7 @@ impl Default for Config {
             theme: default_theme(),
             line_numbers: false,
             width: 0,
+            mermaid_render: default_mermaid_render(),
         }
     }
 }
@@ -40,4 +47,20 @@ impl Config {
 
 fn config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("mdterm").join("config.toml"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_mermaid_render_is_auto() {
+        assert_eq!(Config::default().mermaid_render, "auto");
+    }
+
+    #[test]
+    fn parse_mermaid_render_config() {
+        let config: Config = toml::from_str("mermaid_render = \"ascii\"\n").unwrap();
+        assert_eq!(config.mermaid_render, "ascii");
+    }
 }
