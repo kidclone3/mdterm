@@ -1627,6 +1627,7 @@ dependencies = [
  "open",
  "pulldown-cmark 0.11.3",
  "regex",
+ "roughr-merman",
  "serde",
  "serde_json",
  "syntect",

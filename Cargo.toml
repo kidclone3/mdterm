@@ -28,6 +28,8 @@ notify = "7"
 serde_json = "1"
 flate2 = { version = "1", optional = true }
 merman = { version = "=0.7.0", default-features = false, features = ["ascii", "raster"] }
+# merman-render 0.7.0 is incompatible with roughr-merman 0.12.2.
+roughr-merman = "=0.12.1"
 
 [features]
 default = ["pos"]
